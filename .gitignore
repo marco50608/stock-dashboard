@@ -35,6 +35,12 @@ pip-delete-this-directory.txt
 # ====================================================================
 cache/*
 !cache/.gitkeep
+# Allow committing reference data files so Streamlit Cloud can read them
+# (these sources are login-walled or Cloudflare-blocked from cloud IPs)
+!cache/aaii_sentiment.xls
+!cache/aaii_sentiment.xlsx
+!cache/finra_margin.xlsx
+!cache/naaim.xlsx
 
 # ====================================================================
 # IDE / editor

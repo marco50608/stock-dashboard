@@ -29,6 +29,21 @@ CACHE_DIR.mkdir(exist_ok=True)
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 
 
+def _config(key: str, default: str | None = None) -> str | None:
+    """Get a config value from os.environ (local .env) or Streamlit secrets (cloud).
+    Order: os.environ → st.secrets → default."""
+    val = os.getenv(key)
+    if val:
+        return val
+    try:
+        v = st.secrets.get(key)
+        if v:
+            return str(v)
+    except Exception:
+        pass
+    return default
+
+
 class DataUnavailable(Exception):
     """Raised when a data source can't be fetched. Pages should catch and show a clear message."""
 
@@ -80,13 +95,7 @@ def get_vix_term_structure(period: str = "5y") -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 def _fred_key() -> str | None:
-    key = os.getenv("FRED_API_KEY")
-    if key:
-        return key
-    try:
-        return st.secrets.get("FRED_API_KEY")  # only works inside Streamlit
-    except Exception:
-        return None
+    return _config("FRED_API_KEY")
 
 
 @st.cache_data(ttl=24 * 3600, show_spinner=False)
@@ -772,8 +781,8 @@ def get_stock_valuations(symbols: tuple) -> pd.DataFrame:
 def _finra_oauth_token():
     """Exchange FINRA client_id/secret for an access token.
     Returns (token, diagnostic_message)."""
-    cid = os.getenv("FINRA_CLIENT_ID")
-    secret = os.getenv("FINRA_CLIENT_SECRET")
+    cid = _config("FINRA_CLIENT_ID")
+    secret = _config("FINRA_CLIENT_SECRET")
     if not cid or not secret:
         return None, "未設定 FINRA_CLIENT_ID / FINRA_CLIENT_SECRET"
     if cid.strip() != cid or secret.strip() != secret:
@@ -797,7 +806,7 @@ def _finra_oauth_token():
 
 def get_margin_debt_via_api():
     """Try FINRA Data API. Returns None if no creds; raises DataUnavailable if API path fails."""
-    cid = os.getenv("FINRA_CLIENT_ID")
+    cid = _config("FINRA_CLIENT_ID")
     if not cid:
         return None
     token, diag = _finra_oauth_token()
@@ -860,7 +869,7 @@ TRACKED_FUNDS = {
 
 
 def _sec_headers():
-    return {"User-Agent": os.getenv("SEC_USER_AGENT", "Personal Research personal@example.com")}
+    return {"User-Agent": _config("SEC_USER_AGENT", "Personal Research personal@example.com")}
 
 
 @st.cache_data(ttl=12 * 3600, show_spinner=False)
@@ -1098,10 +1107,10 @@ def find_support_levels(price_series: pd.Series, n: int = 2, lookback: int = 90)
     for w in (20, 40, lookback):
         sub = s.tail(w)
         if not sub.empty:
-            idx = sub.idxmin()
-            lvl = float(sub.loc[idx])
+            idx_min = sub.idxmin()
+            lvl = float(sub.loc[idx_min])
             if lvl < current * 0.995:
-                candidates.append((idx, lvl))
+                candidates.append((idx_min, lvl))
 
     # Sort by level descending (closest below current first)
     candidates.sort(key=lambda x: -x[1])

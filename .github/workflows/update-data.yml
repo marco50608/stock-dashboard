@@ -1,0 +1,104 @@
+name: Update market data weekly
+
+on:
+  schedule:
+    # 每週一 09:00 UTC（台灣時間週一下午 5 點）
+    - cron: '0 9 * * MON'
+  workflow_dispatch:  # 允許手動觸發
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        run: pip install cloudscraper openpyxl pandas requests lxml beautifulsoup4
+
+      - name: Download FINRA margin debt
+        run: |
+          python <<'PY'
+          import cloudscraper, pathlib, os
+          UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+          scraper = cloudscraper.create_scraper(browser={"browser":"chrome","platform":"windows"})
+          urls = [
+              "https://www.finra.org/sites/default/files/2021-03/margin-statistics.xlsx",
+          ]
+          headers = {
+              "User-Agent": UA,
+              "Referer": "https://www.finra.org/rules-guidance/key-topics/margin-accounts/margin-statistics",
+          }
+          pathlib.Path("cache").mkdir(exist_ok=True)
+          for url in urls:
+              try:
+                  r = scraper.get(url, headers=headers, timeout=60)
+                  print(f"FINRA {url}: HTTP {r.status_code}, {len(r.content)} bytes")
+                  if r.status_code == 200 and len(r.content) > 5000:
+                      with open("cache/finra_margin.xlsx","wb") as f:
+                          f.write(r.content)
+                      print("FINRA saved")
+                      break
+              except Exception as e:
+                  print(f"FINRA error: {e}")
+          PY
+
+      - name: Download NAAIM exposure
+        run: |
+          python <<'PY'
+          import cloudscraper, requests, re, pathlib, datetime
+          UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+          scraper = cloudscraper.create_scraper()
+          # Scrape page for xlsx link
+          urls = []
+          try:
+              r = scraper.get("https://www.naaim.org/programs/naaim-exposure-index/",
+                              headers={"User-Agent": UA}, timeout=30)
+              if r.status_code == 200:
+                  found = re.findall(r'href=["\']([^"\']+\.xlsx?)["\']', r.text, flags=re.I)
+                  for u in found:
+                      if "naaim" in u.lower() or "exposure" in u.lower():
+                          full = u if u.startswith("http") else "https://www.naaim.org" + u
+                          urls.append(full)
+          except Exception as e:
+              print(f"scrape error: {e}")
+          # Year-month fallback
+          today = datetime.datetime.now()
+          for back in range(24):
+              y, m = today.year, today.month - back
+              while m <= 0:
+                  m += 12; y -= 1
+              urls.append(f"https://www.naaim.org/wp-content/uploads/{y}/{m:02d}/NAAIM-Exposure-Index-Data.xlsx")
+          pathlib.Path("cache").mkdir(exist_ok=True)
+          for url in urls:
+              try:
+                  r = scraper.get(url, headers={"User-Agent": UA}, timeout=60)
+                  print(f"NAAIM {url}: HTTP {r.status_code}, {len(r.content)} bytes")
+                  if r.status_code == 200 and len(r.content) > 5000:
+                      with open("cache/naaim.xlsx","wb") as f:
+                          f.write(r.content)
+                      print("NAAIM saved")
+                      break
+              except Exception as e:
+                  print(f"NAAIM error: {e}")
+          PY
+
+      - name: Commit & push if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add cache/
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Auto-update cache files [skip ci]"
+            git push
+          fi
