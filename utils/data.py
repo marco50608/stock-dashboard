@@ -11,8 +11,10 @@ via the `ttl` argument to streamlit's cache).
 from __future__ import annotations
 
 import io
+import json
 import os
-from datetime import datetime, timedelta
+import time
+from datetime import datetime, timedelta, date as _date
 from pathlib import Path
 
 import pandas as pd
@@ -175,17 +177,394 @@ def _append_pcr_snapshot():
         new.to_csv(snap_path, index=False)
 
 
+# ---------------------------------------------------------------------------
+# CBOE daily Market Statistics — P/C ratios + per-product Volume/OI.
+# Storage layout (in cache/):
+#   cboe_raw/<YYYY-MM-DD>_daily_options.json  — per-day raw (gitignored)
+#   cboe_ratios_wide.csv                      — wide P/C ratios (committed, canonical)
+#   cboe_volume_oi_wide.csv                   — wide per-product volume + OI (committed)
+#   cboe_ratios_long.csv                      — long P/C ratios (gitignored, redundant)
+#   cboe_volume_oi_long.csv                   — long volume/OI (gitignored, redundant)
+#   cboe_put_call_ratios.csv                  — original 3-col long (gitignored, redundant)
+#
+# JSON structure of a CBOE daily file (observed):
+#   {
+#     "ratios": [{"name": "TOTAL PUT/CALL RATIO", "value": "0.93"}, ...],
+#     "SUM OF ALL PRODUCTS": [{"name": "VOLUME", "call": ..., "put": ..., "total": ...},
+#                             {"name": "OPEN INTEREST", ...}],
+#     "EQUITY OPTIONS": [...],
+#     "EXCHANGE TRADED PRODUCTS": [...],
+#     "INDEX OPTIONS": [...],
+#     "CBOE VOLATILITY INDEX (VIX)": [...],
+#     "SPX + SPXW": [...], "OEX": [...], "MRUT": [...], "MXEA": [...], ...
+#   }
+# ---------------------------------------------------------------------------
+
+import re as _re
+
+CBOE_RAW_DIR = CACHE_DIR / "cboe_raw"
+CBOE_RATIOS_WIDE_CSV = CACHE_DIR / "cboe_ratios_wide.csv"
+CBOE_RATIOS_LONG_CSV = CACHE_DIR / "cboe_ratios_long.csv"
+CBOE_VOL_OI_WIDE_CSV = CACHE_DIR / "cboe_volume_oi_wide.csv"
+CBOE_VOL_OI_LONG_CSV = CACHE_DIR / "cboe_volume_oi_long.csv"
+# Legacy filename kept for back-compat with the original bootstrap script
+CBOE_LONG_CSV = CACHE_DIR / "cboe_put_call_ratios.csv"
+CBOE_START_DATE = "2019-10-07"  # first day with data on the CDN endpoint
+
+# Friendly aliases used elsewhere in the app
+CBOE_RATIO_FRIENDLY = {
+    "total_pc":    "total",
+    "index_pc":    "index",
+    "equity_pc":   "equity",
+    "etp_pc":      "etp",
+    "spx_spxw_pc": "spx_spxw",
+    "vix_pc":      "vix",
+}
+
+# Explicit ratio_name -> column code map (matches the user's extended extractor)
+_RATIO_NAME_MAP = {
+    "TOTAL PUT/CALL RATIO": "total_pc",
+    "INDEX PUT/CALL RATIO": "index_pc",
+    "EXCHANGE TRADED PRODUCTS PUT/CALL RATIO": "etp_pc",
+    "EQUITY PUT/CALL RATIO": "equity_pc",
+    "CBOE VOLATILITY INDEX (VIX) PUT/CALL RATIO": "vix_pc",
+    "SPX + SPXW PUT/CALL RATIO": "spx_spxw_pc",
+    "OEX PUT/CALL RATIO": "oex_pc",
+    "MRUT PUT/CALL RATIO": "mrut_pc",
+    "MXEA PUT/CALL RATIO": "mxea_pc",
+    "MXEF PUT/CALL RATIO": "mxef_pc",
+    "MXACW PUT/CALL RATIO": "mxacw_pc",
+    "MXWLD PUT/CALL RATIO": "mxwld_pc",
+    "MXUSA PUT/CALL RATIO": "mxusa_pc",
+    "CBTX PUT/CALL RATIO": "cbtx_pc",
+    "MBTX PUT/CALL RATIO": "mbtx_pc",
+    "SPEQX PUT/CALL RATIO": "speqx_pc",
+    "SPEQW PUT/CALL RATIO": "speqw_pc",
+    "MGTN PUT/CALL RATIO": "mgtn_pc",
+    "MGTNW PUT/CALL RATIO": "mgtnw_pc",
+}
+
+
+def _ratio_name_to_code(name: str) -> str | None:
+    """Map ratio_name to short column code. Mirrors user's clean_ratio_column()."""
+    if not name:
+        return None
+    if name in _RATIO_NAME_MAP:
+        return _RATIO_NAME_MAP[name]
+    col = str(name).lower().replace(" put/call ratio", "")
+    col = _re.sub(r"[^a-z0-9]+", "_", col).strip("_")
+    return f"{col}_pc" if col else None
+
+
+def _extract_cboe_full(data: dict, date_str: str, source_file: str = "") -> tuple[list, list]:
+    """Extract P/C ratios + per-product volume/OI from a CBOE daily JSON.
+
+    Returns (ratio_rows, vol_oi_rows), both long-format lists of dicts:
+      ratio_rows:  date, ratio_name, ratio_column, value, source_file
+      vol_oi_rows: date, product, metric, call, put, total, source_file
+    """
+    ratio_rows = []
+    for item in (data.get("ratios") or []):
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name")
+        if not name:
+            continue
+        ratio_rows.append({
+            "date": date_str,
+            "ratio_name": name,
+            "ratio_column": _ratio_name_to_code(name),
+            "value": item.get("value"),
+            "source_file": source_file,
+        })
+
+    vol_oi_rows = []
+    for product, items in data.items():
+        if product == "ratios" or not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            metric = item.get("name")
+            if metric not in ("VOLUME", "OPEN INTEREST"):
+                continue
+            vol_oi_rows.append({
+                "date": date_str,
+                "product": product,
+                "metric": metric,
+                "call": item.get("call"),
+                "put": item.get("put"),
+                "total": item.get("total"),
+                "source_file": source_file,
+            })
+    return ratio_rows, vol_oi_rows
+
+
+def _fetch_cboe_daily(date_str: str, save_raw: bool = True) -> tuple[list, list] | tuple[None, None]:
+    """Fetch one trading day of CBOE daily Market Statistics JSON.
+
+    Returns (ratio_rows, vol_oi_rows). Either may be empty list if section
+    is missing; returns (None, None) on HTTP/parse failure.
+    Reuses cached raw JSON in cache/cboe_raw/ when present (zero network).
+    """
+    CBOE_RAW_DIR.mkdir(exist_ok=True)
+    raw_path = CBOE_RAW_DIR / f"{date_str}_daily_options.json"
+
+    if raw_path.exists():
+        try:
+            with open(raw_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            return None, None
+    else:
+        url = f"https://cdn.cboe.com/data/us/options/market_statistics/daily/{date_str}_daily_options"
+        try:
+            r = requests.get(
+                url,
+                headers={
+                    "User-Agent": "Mozilla/5.0",
+                    "Accept": "application/json,text/plain,*/*",
+                    "Referer": "https://www.cboe.com/markets/us/options/market-statistics/daily/",
+                },
+                timeout=30,
+            )
+            if r.status_code != 200:
+                return None, None
+            data = r.json()
+        except Exception:
+            return None, None
+        if save_raw:
+            try:
+                with open(raw_path, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+            except Exception:
+                pass
+
+    return _extract_cboe_full(data, date_str, source_file=raw_path.name)
+
+
+def _wide_ratios_to_friendly(df_wide: pd.DataFrame) -> pd.DataFrame:
+    """Pick canonical P/C columns out of cboe_ratios_wide.csv with friendly names.
+
+    Output: indexed by date, columns total/index/equity/etp/spx_spxw/vix.
+    """
+    if df_wide is None or df_wide.empty:
+        return pd.DataFrame()
+    df = df_wide.copy()
+    if "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"])
+        df = df.set_index("date").sort_index()
+    out = pd.DataFrame(index=df.index)
+    for src, alias in CBOE_RATIO_FRIENDLY.items():
+        if src in df.columns:
+            out[alias] = pd.to_numeric(df[src], errors="coerce")
+    return out.dropna(how="all")
+
+
+def _stats_long_to_wide(stats_long: pd.DataFrame) -> pd.DataFrame:
+    """Pivot long-format volume/OI rows to wide layout matching user's extractor.
+
+    Output columns: date, product, open_interest_call, volume_call,
+                    open_interest_put, volume_put, open_interest_total, volume_total
+    """
+    if stats_long is None or stats_long.empty:
+        return pd.DataFrame()
+    s = stats_long.copy()
+    s["date"] = pd.to_datetime(s["date"])
+    for c in ("call", "put", "total"):
+        if c in s.columns:
+            s[c] = pd.to_numeric(s[c], errors="coerce")
+    pivoted = (
+        s.drop_duplicates(["date", "product", "metric"], keep="last")
+        .pivot_table(
+            index=["date", "product"],
+            columns="metric",
+            values=["call", "put", "total"],
+            aggfunc="first",
+        )
+    )
+    # Flatten MultiIndex columns: ("call","VOLUME") -> "volume_call"
+    pivoted.columns = [
+        f"{metric.lower().replace(' ', '_')}_{side}"
+        for side, metric in pivoted.columns
+    ]
+    return pivoted.reset_index()
+
+
+@st.cache_data(ttl=24 * 3600, show_spinner=False)
+def _cboe_daily_cache(max_fetch_per_call: int = 90) -> pd.DataFrame:
+    """Incrementally update both CBOE wide caches; return friendly P/C ratios DF.
+
+    Reads cache/cboe_ratios_wide.csv to find the last cached date, then for
+    each missing trading day fetches the JSON and updates BOTH wide CSVs
+    (ratios + volume/OI). Returns the friendly-aliased ratios DataFrame.
+    """
+    # Step 1: load existing ratios wide
+    if CBOE_RATIOS_WIDE_CSV.exists():
+        try:
+            ratios_wide = pd.read_csv(CBOE_RATIOS_WIDE_CSV)
+            if "date" in ratios_wide.columns:
+                ratios_wide["date"] = pd.to_datetime(ratios_wide["date"])
+        except Exception:
+            ratios_wide = pd.DataFrame()
+    else:
+        ratios_wide = pd.DataFrame()
+
+    # Step 2: load existing volume/OI wide
+    if CBOE_VOL_OI_WIDE_CSV.exists():
+        try:
+            voloi_wide = pd.read_csv(CBOE_VOL_OI_WIDE_CSV)
+            if "date" in voloi_wide.columns:
+                voloi_wide["date"] = pd.to_datetime(voloi_wide["date"])
+        except Exception:
+            voloi_wide = pd.DataFrame()
+    else:
+        voloi_wide = pd.DataFrame()
+
+    # Step 3: resume from earlier of the two (so a stale vol_oi file catches up too)
+    candidates = []
+    if not ratios_wide.empty and "date" in ratios_wide.columns:
+        try: candidates.append(ratios_wide["date"].max().date())
+        except Exception: pass
+    if not voloi_wide.empty and "date" in voloi_wide.columns:
+        try: candidates.append(voloi_wide["date"].max().date())
+        except Exception: pass
+    start = (min(candidates) + timedelta(days=1)) if candidates else _date.fromisoformat(CBOE_START_DATE)
+    end = _date.today()
+
+    # Step 4: fetch missing days, accumulate long-format rows
+    new_ratio_rows = []
+    new_voloi_rows = []
+    fetched = 0
+    cur = start
+    while cur <= end and fetched < max_fetch_per_call:
+        if cur.weekday() < 5:
+            r_rows, v_rows = _fetch_cboe_daily(cur.isoformat())
+            if r_rows:
+                new_ratio_rows.extend(r_rows)
+            if v_rows:
+                new_voloi_rows.extend(v_rows)
+            fetched += 1
+            time.sleep(0.15)
+        cur += timedelta(days=1)
+
+    # Step 5a: fold new ratios into wide, persist
+    if new_ratio_rows:
+        dn = pd.DataFrame(new_ratio_rows)
+        dn["date"] = pd.to_datetime(dn["date"])
+        dn["value"] = pd.to_numeric(dn["value"], errors="coerce")
+        dn = dn.dropna(subset=["ratio_column"])
+        if not dn.empty:
+            pivoted = (
+                dn.drop_duplicates(["date", "ratio_column"], keep="last")
+                .pivot(index="date", columns="ratio_column", values="value")
+                .reset_index()
+            )
+            if not ratios_wide.empty:
+                ratios_wide = pd.concat([ratios_wide, pivoted], ignore_index=True)
+                ratios_wide = (
+                    ratios_wide.drop_duplicates(subset=["date"], keep="last")
+                    .sort_values("date").reset_index(drop=True)
+                )
+            else:
+                ratios_wide = pivoted.sort_values("date").reset_index(drop=True)
+            try:
+                ratios_wide.to_csv(CBOE_RATIOS_WIDE_CSV, index=False)
+            except Exception:
+                pass
+
+    # Step 5b: fold new vol/OI into wide, persist
+    if new_voloi_rows:
+        ds = pd.DataFrame(new_voloi_rows)
+        new_wide = _stats_long_to_wide(ds)
+        if not new_wide.empty:
+            if not voloi_wide.empty:
+                voloi_wide = pd.concat([voloi_wide, new_wide], ignore_index=True)
+                voloi_wide = (
+                    voloi_wide.drop_duplicates(subset=["date", "product"], keep="last")
+                    .sort_values(["date", "product"]).reset_index(drop=True)
+                )
+            else:
+                voloi_wide = new_wide.sort_values(["date", "product"]).reset_index(drop=True)
+            try:
+                voloi_wide.to_csv(CBOE_VOL_OI_WIDE_CSV, index=False)
+            except Exception:
+                pass
+
+    return _wide_ratios_to_friendly(ratios_wide)
+
+
+@st.cache_data(ttl=24 * 3600, show_spinner=False)
+def get_cboe_volume_oi() -> pd.DataFrame:
+    """Per-product daily options volume + open interest from CBOE.
+
+    Triggers the unified cache updater (so vol/OI catches up alongside ratios),
+    then returns the wide-format DataFrame:
+      columns: date, product, open_interest_call, volume_call,
+               open_interest_put, volume_put, open_interest_total, volume_total
+    Common products: 'CBOE VOLATILITY INDEX (VIX)', 'EQUITY OPTIONS',
+                     'EXCHANGE TRADED PRODUCTS', 'INDEX OPTIONS',
+                     'SPX + SPXW', 'SUM OF ALL PRODUCTS', ...
+    """
+    # Update path: forces _cboe_daily_cache to run, which updates both files
+    try:
+        _cboe_daily_cache()
+    except Exception:
+        pass
+    if not CBOE_VOL_OI_WIDE_CSV.exists():
+        raise DataUnavailable(
+            "cache/cboe_volume_oi_wide.csv not found. Run "
+            "notebooks/bootstrap_cboe.py to populate it."
+        )
+    try:
+        df = pd.read_csv(CBOE_VOL_OI_WIDE_CSV)
+        df["date"] = pd.to_datetime(df["date"])
+        return df.sort_values(["date", "product"]).reset_index(drop=True)
+    except Exception as e:
+        raise DataUnavailable(f"Failed to read cboe_volume_oi_wide.csv: {e}") from e
+
+
+
 @st.cache_data(ttl=24 * 3600, show_spinner=False)
 def get_put_call_ratio() -> pd.DataFrame:
     """CBOE Put/Call Ratio.
 
     Strategy (in order):
-      1. Stooq historical CSV for ^cpc / ^cpce / ^cpci  (no key, reliable).
-      2. CBOE JSON API.
-      3. yfinance tickers.
-      4. yfinance option chain → QQQ/SPY P/C snapshot, auto-accumulating to local CSV.
-      5. Local cache/cboe_pcr.csv.
+      0. **cache/cboe_pcr.csv** (manual download — most reliable, weekly update)
+      1. Nasdaq.com public API for .CPC / .CPCE / .CPCI
+      2. Stooq historical CSV
+      3. CBOE JSON API
+      4. yfinance tickers
+      5. yfinance option chain → auto-accumulating snapshot
     """
+    # 0a. Load manual archive CSV if provided (e.g. pre-2019 historical)
+    archive_df = pd.DataFrame()
+    local = CACHE_DIR / "cboe_pcr.csv"
+    if local.exists():
+        try:
+            df = pd.read_csv(local)
+            date_col = next((c for c in df.columns if "date" in c.lower()), df.columns[0])
+            df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
+            df = df.dropna(subset=[date_col]).set_index(date_col).sort_index()
+            num = df.select_dtypes(include="number")
+            if not num.empty:
+                archive_df = num[~num.index.duplicated(keep="last")]
+        except Exception:
+            pass
+
+    # 0b. Auto-accumulate CBOE daily JSON (2019+, incrementally fetched)
+    try:
+        daily_df = _cboe_daily_cache()
+    except Exception:
+        daily_df = pd.DataFrame()
+
+    # Merge: archive first, then daily takes precedence on overlap
+    if not archive_df.empty or not daily_df.empty:
+        combined = pd.concat([archive_df, daily_df])
+        if not combined.empty:
+            combined = combined[~combined.index.duplicated(keep="last")].sort_index()
+            return combined
+
     # 0. Nasdaq.com public API — historical data for .CPC / .CPCE / .CPCI.
     nasdaq_out = {}
     for label, sym in [("total", "CPC"), ("equity", "CPCE"), ("index", "CPCI")]:

@@ -28,31 +28,187 @@ jobs:
       - name: Install deps
         run: pip install cloudscraper openpyxl pandas requests lxml beautifulsoup4
 
-      - name: Download FINRA margin debt
+      - name: Try FINRA margin debt (best-effort)
+        # FINRA's Cloudflare challenge defeats cloudscraper. We still try in case
+        # they relax it; if it fails the existing cache/finra_margin.xlsx stays.
+        continue-on-error: true
         run: |
           python <<'PY'
-          import cloudscraper, pathlib, os
+          import cloudscraper, pathlib
           UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
           scraper = cloudscraper.create_scraper(browser={"browser":"chrome","platform":"windows"})
-          urls = [
-              "https://www.finra.org/sites/default/files/2021-03/margin-statistics.xlsx",
-          ]
-          headers = {
-              "User-Agent": UA,
-              "Referer": "https://www.finra.org/rules-guidance/key-topics/margin-accounts/margin-statistics",
-          }
+          url = "https://www.finra.org/sites/default/files/2021-03/margin-statistics.xlsx"
+          headers = {"User-Agent": UA,
+                     "Referer": "https://www.finra.org/rules-guidance/key-topics/margin-accounts/margin-statistics"}
           pathlib.Path("cache").mkdir(exist_ok=True)
-          for url in urls:
-              try:
-                  r = scraper.get(url, headers=headers, timeout=60)
-                  print(f"FINRA {url}: HTTP {r.status_code}, {len(r.content)} bytes")
-                  if r.status_code == 200 and len(r.content) > 5000:
-                      with open("cache/finra_margin.xlsx","wb") as f:
-                          f.write(r.content)
-                      print("FINRA saved")
-                      break
-              except Exception as e:
-                  print(f"FINRA error: {e}")
+          try:
+              r = scraper.get(url, headers=headers, timeout=60)
+              print(f"FINRA: HTTP {r.status_code}, {len(r.content)} bytes")
+              # XLSX file is typically >10KB; <10KB usually means Cloudflare HTML
+              if r.status_code == 200 and len(r.content) > 10000 and r.content[:2] == b'PK':
+                  with open("cache/finra_margin.xlsx","wb") as f:
+                      f.write(r.content)
+                  print("FINRA saved successfully")
+              else:
+                  print("FINRA blocked by Cloudflare — keeping existing cache file unchanged")
+          except Exception as e:
+              print(f"FINRA error (non-fatal): {e}")
+          PY
+
+      - name: Update CBOE caches (P/C ratios + volume/OI, incremental)
+        # Reads cache/cboe_ratios_wide.csv AND cache/cboe_volume_oi_wide.csv,
+        # finds the earlier "last date" of the two, then hits CBOE's daily JSON
+        # for each missing trading day. Extracts BOTH P/C ratios and per-product
+        # volume/OI in one parse and updates both wide CSVs.
+        #
+        # If CBOE blocks the GHA IP, this step still exits 0 and both CSVs stay
+        # unchanged. Verify in the logs that 'new days' > 0 each week.
+        continue-on-error: true
+        run: |
+          python <<'PY'
+          import json, re, time, datetime as dt, pathlib, requests, pandas as pd
+
+          RATIOS_CSV = pathlib.Path("cache/cboe_ratios_wide.csv")
+          VOLOI_CSV  = pathlib.Path("cache/cboe_volume_oi_wide.csv")
+          RATIOS_CSV.parent.mkdir(exist_ok=True)
+          START = "2019-10-07"
+
+          # Explicit ratio_name -> column code (matches user's extractor)
+          NAME_MAP = {
+              "TOTAL PUT/CALL RATIO": "total_pc",
+              "INDEX PUT/CALL RATIO": "index_pc",
+              "EXCHANGE TRADED PRODUCTS PUT/CALL RATIO": "etp_pc",
+              "EQUITY PUT/CALL RATIO": "equity_pc",
+              "CBOE VOLATILITY INDEX (VIX) PUT/CALL RATIO": "vix_pc",
+              "SPX + SPXW PUT/CALL RATIO": "spx_spxw_pc",
+              "OEX PUT/CALL RATIO": "oex_pc",
+              "MRUT PUT/CALL RATIO": "mrut_pc",
+              "MXEA PUT/CALL RATIO": "mxea_pc",
+              "MXEF PUT/CALL RATIO": "mxef_pc",
+              "MXACW PUT/CALL RATIO": "mxacw_pc",
+              "MXWLD PUT/CALL RATIO": "mxwld_pc",
+              "MXUSA PUT/CALL RATIO": "mxusa_pc",
+              "CBTX PUT/CALL RATIO": "cbtx_pc",
+              "MBTX PUT/CALL RATIO": "mbtx_pc",
+              "SPEQX PUT/CALL RATIO": "speqx_pc",
+              "SPEQW PUT/CALL RATIO": "speqw_pc",
+              "MGTN PUT/CALL RATIO": "mgtn_pc",
+              "MGTNW PUT/CALL RATIO": "mgtnw_pc",
+          }
+          def to_code(name):
+              if not name: return None
+              if name in NAME_MAP: return NAME_MAP[name]
+              col = name.lower().replace(" put/call ratio", "")
+              col = re.sub(r"[^a-z0-9]+", "_", col).strip("_")
+              return f"{col}_pc" if col else None
+
+          def extract(data, date_str):
+              ratio_rows = []
+              for it in (data.get("ratios") or []):
+                  if not isinstance(it, dict): continue
+                  n = it.get("name")
+                  if not n: continue
+                  ratio_rows.append({"date": date_str, "ratio_column": to_code(n), "value": it.get("value")})
+              voloi_rows = []
+              for product, items in data.items():
+                  if product == "ratios" or not isinstance(items, list): continue
+                  for it in items:
+                      if not isinstance(it, dict): continue
+                      m = it.get("name")
+                      if m not in ("VOLUME", "OPEN INTEREST"): continue
+                      voloi_rows.append({"date": date_str, "product": product, "metric": m,
+                                         "call": it.get("call"), "put": it.get("put"), "total": it.get("total")})
+              return ratio_rows, voloi_rows
+
+          # Load existing wide files
+          def load(path):
+              if path.exists():
+                  df = pd.read_csv(path)
+                  if "date" in df.columns:
+                      df["date"] = pd.to_datetime(df["date"])
+                  return df
+              return pd.DataFrame()
+
+          ratios_wide = load(RATIOS_CSV)
+          voloi_wide  = load(VOLOI_CSV)
+
+          last_dates = []
+          if not ratios_wide.empty: last_dates.append(ratios_wide["date"].max().date())
+          if not voloi_wide.empty:  last_dates.append(voloi_wide["date"].max().date())
+          start = (min(last_dates) + dt.timedelta(days=1)) if last_dates else dt.date.fromisoformat(START)
+          end = dt.date.today()
+          print(f"CBOE: resuming from {start} through {end}")
+
+          headers = {
+              "User-Agent": "Mozilla/5.0",
+              "Accept": "application/json,text/plain,*/*",
+              "Referer": "https://www.cboe.com/markets/us/options/market-statistics/daily/",
+          }
+
+          new_ratios = []; new_voloi = []
+          ok = miss = 0
+          cur = start
+          while cur <= end:
+              if cur.weekday() < 5:
+                  ds = cur.isoformat()
+                  url = f"https://cdn.cboe.com/data/us/options/market_statistics/daily/{ds}_daily_options"
+                  try:
+                      r = requests.get(url, headers=headers, timeout=30)
+                      if r.status_code == 200:
+                          rr, vr = extract(r.json(), ds)
+                          if rr: new_ratios.extend(rr)
+                          if vr: new_voloi.extend(vr)
+                          if rr or vr: ok += 1
+                          else: miss += 1
+                      else:
+                          miss += 1
+                  except Exception:
+                      miss += 1
+                  time.sleep(0.15)
+              cur += dt.timedelta(days=1)
+          print(f"CBOE: {ok} new days, {miss} missing")
+
+          # Append ratios to wide
+          if new_ratios:
+              dn = pd.DataFrame(new_ratios)
+              dn["date"] = pd.to_datetime(dn["date"])
+              dn["value"] = pd.to_numeric(dn["value"], errors="coerce")
+              dn = dn.dropna(subset=["ratio_column"])
+              if not dn.empty:
+                  piv = (dn.drop_duplicates(["date","ratio_column"], keep="last")
+                           .pivot(index="date", columns="ratio_column", values="value")
+                           .reset_index())
+                  if not ratios_wide.empty:
+                      ratios_wide = pd.concat([ratios_wide, piv], ignore_index=True)
+                      ratios_wide = (ratios_wide.drop_duplicates(subset=["date"], keep="last")
+                                     .sort_values("date").reset_index(drop=True))
+                  else:
+                      ratios_wide = piv.sort_values("date").reset_index(drop=True)
+                  ratios_wide.to_csv(RATIOS_CSV, index=False)
+                  print(f"CBOE ratios: {len(ratios_wide)} rows total")
+
+          # Append vol/OI to wide
+          if new_voloi:
+              ds = pd.DataFrame(new_voloi)
+              ds["date"] = pd.to_datetime(ds["date"])
+              for c in ("call","put","total"):
+                  ds[c] = pd.to_numeric(ds[c], errors="coerce")
+              piv = (ds.drop_duplicates(["date","product","metric"], keep="last")
+                       .pivot_table(index=["date","product"], columns="metric",
+                                    values=["call","put","total"], aggfunc="first"))
+              piv.columns = [f"{metric.lower().replace(' ','_')}_{side}" for side, metric in piv.columns]
+              piv = piv.reset_index()
+              if not voloi_wide.empty:
+                  voloi_wide = pd.concat([voloi_wide, piv], ignore_index=True)
+                  voloi_wide = (voloi_wide.drop_duplicates(subset=["date","product"], keep="last")
+                                .sort_values(["date","product"]).reset_index(drop=True))
+              else:
+                  voloi_wide = piv.sort_values(["date","product"]).reset_index(drop=True)
+              voloi_wide.to_csv(VOLOI_CSV, index=False)
+              print(f"CBOE vol/OI: {len(voloi_wide)} rows total")
+
+          if not new_ratios and not new_voloi:
+              print("CBOE: nothing new (up to date, or all blocked)")
           PY
 
       - name: Download NAAIM exposure

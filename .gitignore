@@ -41,6 +41,17 @@ cache/*
 !cache/aaii_sentiment.xlsx
 !cache/finra_margin.xlsx
 !cache/naaim.xlsx
+!cache/cboe_pcr.csv
+# Canonical CBOE files used by the app (kept small + committed):
+!cache/cboe_ratios_wide.csv
+!cache/cboe_volume_oi_wide.csv
+
+# Redundant / large CBOE artifacts — keep local-only, do not commit.
+# (Wide versions above contain the same info in a smaller, app-friendly shape.)
+cache/cboe_raw/
+cache/cboe_ratios_long.csv
+cache/cboe_volume_oi_long.csv
+cache/cboe_put_call_ratios.csv
 
 # ====================================================================
 # IDE / editor
@@ -57,6 +68,14 @@ Thumbs.db
 # Streamlit
 # ====================================================================
 .streamlit/secrets.toml
+
+# ====================================================================
+# ML — keep local-only until you decide whether to publish
+# ====================================================================
+utils/ml.py
+pages/6_ML_Prediction.py
+notebooks/
+*.ipynb
 
 # ====================================================================
 # OS junk

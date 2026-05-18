@@ -9,6 +9,7 @@ import streamlit as st
 from utils.data import (
     DataUnavailable,
     TRACKED_FUNDS,
+    get_cboe_volume_oi,
     get_cot_financial,
     get_latest_13f,
     get_margin_debt,
@@ -96,8 +97,69 @@ try:
     pick = st.selectbox("選擇市場", options)
     row = cot[cot[market_col] == pick]
     if not row.empty:
-        st.dataframe(row.T, use_container_width=True)
-    st.caption("注意：這只是最近一週的快照。完整歷史請從 CFTC 下載年度 XLS。")
+        r = row.iloc[0]
+        # Helper: pick the first column matching any of several keywords (case-insensitive)
+        def pick_col(*keywords):
+            for c in cot.columns:
+                cl = str(c).lower()
+                if all(k.lower() in cl for k in keywords):
+                    return c
+            return None
+
+        def fmt(v):
+            try: return f"{int(float(v)):,}"
+            except Exception: return str(v)
+
+        # Build readable positioning table
+        groups = [
+            ("總未平倉量", [
+                ("Open Interest", pick_col("open_interest", "all"))]),
+            ("Dealer / Intermediary（造市商，避險為主）", [
+                ("多單", pick_col("dealer", "long")),
+                ("空單", pick_col("dealer", "short")),
+                ("Spread", pick_col("dealer", "spread"))]),
+            ("Asset Manager / Institutional（資產管理機構）", [
+                ("多單", pick_col("asset", "long")),
+                ("空單", pick_col("asset", "short")),
+                ("Spread", pick_col("asset", "spread"))]),
+            ("Leveraged Funds（避險基金 / CTA — 通常較積極）", [
+                ("多單", pick_col("lev", "money", "long")),
+                ("空單", pick_col("lev", "money", "short")),
+                ("Spread", pick_col("lev", "money", "spread"))]),
+            ("Other Reportables（其他大型可申報部位）", [
+                ("多單", pick_col("other", "rept", "long")),
+                ("空單", pick_col("other", "rept", "short")),
+                ("Spread", pick_col("other", "rept", "spread"))]),
+            ("Non-Reportable（小型投機者 — 反指標）", [
+                ("多單", pick_col("nonrept", "long")),
+                ("空單", pick_col("nonrept", "short"))]),
+        ]
+
+        for group_name, rows in groups:
+            st.markdown(f"**{group_name}**")
+            data = []
+            for label, col in rows:
+                if col is not None and col in r.index:
+                    val = r[col]
+                    data.append({"項目": label, "口數": fmt(val)})
+            if data:
+                # Also compute net (long - short) for each group when applicable
+                longs = next((d for d in data if d["項目"] == "多單"), None)
+                shorts = next((d for d in data if d["項目"] == "空單"), None)
+                if longs and shorts:
+                    try:
+                        net = int(float(str(longs["口數"]).replace(",", ""))) - int(float(str(shorts["口數"]).replace(",", "")))
+                        data.append({"項目": "**淨多單**", "口數": f"**{net:+,}**"})
+                    except Exception:
+                        pass
+                st.table(pd.DataFrame(data).set_index("項目"))
+
+        # Show filing/report date if available
+        date_col = next((c for c in cot.columns if "report" in c.lower() and "date" in c.lower()), None)
+        if date_col and date_col in r.index:
+            st.caption(f"📅 報告日期：{r[date_col]}　·　資料來源：CFTC Traders in Financial Futures (週公布)")
+        st.caption("**Leveraged Funds 淨部位**通常是最敏感的——他們轉向時市場常跟著動。"
+                   "**Non-Reportable 淨部位**極端時往往是反指標。")
 except DataUnavailable as e:
     st.warning(str(e))
 
@@ -289,3 +351,167 @@ try:
     )
 except DataUnavailable as e:
     st.warning(str(e))
+
+
+# ---------------------------------------------------------------------------
+# 7. CBOE 選擇權市場活動 — Volume / Open Interest
+# ---------------------------------------------------------------------------
+st.markdown("---")
+st.subheader("7. CBOE 選擇權市場活動（成交量 + 未平倉）")
+with st.expander("📖 詳細說明", expanded=False):
+    st.markdown("""
+**這是什麼？** 從 CBOE 官方每日 JSON 抓的全市場選擇權成交量（VOLUME）與未平倉量（OPEN INTEREST），
+按產品（EQUITY OPTIONS / INDEX OPTIONS / VIX / SPX+SPXW / ETP / ...）拆分。
+
+**三張子圖在看什麼？**
+
+1. **市場熱度（總成交量 + 20 日均線）**：
+   日成交量遠超過 20DMA = 投機/恐慌活動；遠低於 20DMA = 市場觀望。
+   重要的是**相對水準**，不是絕對數值。
+
+2. **散戶 vs 機構偏好（Equity / (Equity + Index) 成交量比，5 日均線）**：
+   單一股票（EQUITY）選擇權主要是散戶；指數（INDEX, SPX, RUT）選擇權主要是機構。
+   - 比值高（> 0.65）：散戶活躍 → 個股投機行情、可能接近頂
+   - 比值低（< 0.5）：機構主導、避險為主 → 通常在恐慌或盤整期
+
+3. **VIX 避險堆積（VIX OI 總量 + 60 日均線）**：
+   未平倉量代表「現有的避險倉位」。OI 攀升 = 越來越多人建立 VIX 多頭部位。
+   持續高 OI 通常代表市場避險需求積壓——可能是擔憂事件、也可能是技術性避險。
+
+**注意**：成交量只反映「有人買賣」，**不告訴你方向**。Put/Call 比率（已在情緒面頁）才反映看漲/看跌。
+這裡的指標主要看**活動規模**和**參與者結構**。
+""")
+
+try:
+    voloi = get_cboe_volume_oi()
+
+    # --- 7a. Total options volume + 20d MA ---
+    total = voloi[voloi["product"] == "SUM OF ALL PRODUCTS"].set_index("date").sort_index()
+    if not total.empty:
+        vol = total["volume_total"].astype(float).dropna()
+        ma20 = vol.rolling(20).mean()
+        fig = go.Figure()
+        fig.add_trace(go.Bar(
+            x=vol.index, y=vol / 1e6, name="日成交量",
+            marker_color="#95a5a6", opacity=0.6,
+            hovertemplate="%{x|%Y-%m-%d}<br>成交量: %{y:.1f}M 口<extra></extra>",
+        ))
+        fig.add_trace(go.Scatter(
+            x=ma20.index, y=ma20 / 1e6, name="20 日均線",
+            line=dict(color="#e74c3c", width=2),
+            hovertemplate="%{x|%Y-%m-%d}<br>20DMA: %{y:.1f}M<extra></extra>",
+        ))
+        cur_val = float(vol.iloc[-1])
+        ma_val = float(ma20.iloc[-1]) if pd.notna(ma20.iloc[-1]) else None
+        rel_label = ""
+        if ma_val:
+            ratio = cur_val / ma_val
+            rel_label = f"（當前 {ratio:.2f}× 20DMA）"
+        fig.update_layout(
+            title=f"7a. 全市場選擇權日成交量 + 20DMA  {rel_label}",
+            yaxis_title="百萬口",
+            height=380,
+            hovermode="x unified",
+        )
+        apply_hover_style(fig)
+        st.plotly_chart(fig, use_container_width=True)
+
+        c1, c2, c3 = st.columns(3)
+        c1.metric("最新成交量", f"{cur_val/1e6:.1f}M 口")
+        if ma_val:
+            c2.metric("20 日均線", f"{ma_val/1e6:.1f}M 口")
+            c3.metric("相對 20DMA", f"{(cur_val/ma_val - 1)*100:+.1f}%")
+
+    # --- 7b. Equity vs Index volume ratio ---
+    eq = voloi[voloi["product"] == "EQUITY OPTIONS"].set_index("date").sort_index()["volume_total"]
+    idx = voloi[voloi["product"] == "INDEX OPTIONS"].set_index("date").sort_index()["volume_total"]
+    if not eq.empty and not idx.empty:
+        df_r = pd.concat({"equity": eq, "index": idx}, axis=1).dropna()
+        df_r["ratio"] = df_r["equity"] / (df_r["equity"] + df_r["index"])
+        ratio_ma = df_r["ratio"].rolling(5).mean()
+
+        fig2 = go.Figure()
+        fig2.add_trace(go.Scatter(
+            x=df_r.index, y=df_r["ratio"], name="日比值",
+            line=dict(color="#bdc3c7", width=1),
+            opacity=0.5,
+            hovertemplate="%{x|%Y-%m-%d}<br>當日: %{y:.3f}<extra></extra>",
+        ))
+        fig2.add_trace(go.Scatter(
+            x=ratio_ma.index, y=ratio_ma, name="5 日均線",
+            line=dict(color="#3498db", width=2.5),
+            hovertemplate="%{x|%Y-%m-%d}<br>5DMA: %{y:.3f}<extra></extra>",
+        ))
+        # Reference lines
+        fig2.add_hline(y=0.65, line=dict(dash="dash", color="#e74c3c", width=1),
+                       annotation_text="散戶活躍 (>0.65)", annotation_position="right")
+        fig2.add_hline(y=0.50, line=dict(dash="dash", color="#95a5a6", width=1),
+                       annotation_text="平衡 (0.5)", annotation_position="right")
+        cur_ratio = float(ratio_ma.dropna().iloc[-1]) if ratio_ma.notna().any() else None
+        fig2.update_layout(
+            title=f"7b. 散戶偏好 = Equity / (Equity + Index) 成交量比"
+                  + (f"   當前 5DMA: {cur_ratio:.3f}" if cur_ratio else ""),
+            yaxis_title="比值",
+            yaxis=dict(range=[0.3, 0.85]),
+            height=380,
+            hovermode="x unified",
+        )
+        apply_hover_style(fig2)
+        st.plotly_chart(fig2, use_container_width=True)
+
+        if cur_ratio is not None:
+            if cur_ratio > 0.65:
+                interp = "🟠 散戶活躍區 — 個股投機行情，歷史上常接近階段頂"
+            elif cur_ratio < 0.50:
+                interp = "🔵 機構主導 — 通常是恐慌或盤整期，避險為主"
+            else:
+                interp = "⚪ 平衡區間"
+            st.caption(interp)
+
+    # --- 7c. VIX OI + 60d MA ---
+    vix_oi = voloi[voloi["product"] == "CBOE VOLATILITY INDEX (VIX)"].set_index("date").sort_index()
+    if not vix_oi.empty:
+        oi = vix_oi["open_interest_total"].astype(float).dropna()
+        oi_ma = oi.rolling(60).mean()
+
+        fig3 = go.Figure()
+        fig3.add_trace(go.Scatter(
+            x=oi.index, y=oi / 1e6, name="VIX OI 總量",
+            line=dict(color="#9b59b6", width=1.5),
+            fill="tozeroy", fillcolor="rgba(155,89,182,0.15)",
+            hovertemplate="%{x|%Y-%m-%d}<br>OI: %{y:.1f}M 口<extra></extra>",
+        ))
+        fig3.add_trace(go.Scatter(
+            x=oi_ma.index, y=oi_ma / 1e6, name="60 日均線",
+            line=dict(color="#e74c3c", width=2, dash="dash"),
+            hovertemplate="%{x|%Y-%m-%d}<br>60DMA: %{y:.1f}M<extra></extra>",
+        ))
+        cur_oi = float(oi.iloc[-1])
+        cur_ma = float(oi_ma.iloc[-1]) if pd.notna(oi_ma.iloc[-1]) else None
+        rel_oi = f"（當前 {(cur_oi/cur_ma - 1)*100:+.1f}% vs 60DMA）" if cur_ma else ""
+        fig3.update_layout(
+            title=f"7c. VIX 未平倉量總量 + 60DMA  {rel_oi}",
+            yaxis_title="百萬口",
+            height=380,
+            hovermode="x unified",
+        )
+        apply_hover_style(fig3)
+        st.plotly_chart(fig3, use_container_width=True)
+
+        c1, c2 = st.columns(2)
+        c1.metric("VIX OI 當前", f"{cur_oi/1e6:.1f}M 口")
+        if cur_ma:
+            c2.metric("相對 60DMA", f"{(cur_oi/cur_ma - 1)*100:+.1f}%")
+
+        # Percentile vs own history
+        pct = (oi.rank(pct=True).iloc[-1]) * 100
+        if pct >= 80:
+            badge = "🔴 歷史高位區 — 避險倉位堆積"
+        elif pct <= 20:
+            badge = "🟢 歷史低位區 — 市場放鬆警戒"
+        else:
+            badge = "⚪ 歷史正常區間"
+        st.caption(f"VIX OI 歷史百分位：第 {pct:.0f} 百分位 · {badge}")
+
+except DataUnavailable as e:
+    st.warning(f"CBOE 成交量/未平倉資料無法取得：{e}")
