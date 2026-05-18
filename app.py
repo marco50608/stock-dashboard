@@ -66,7 +66,7 @@ st.markdown("""
 |---|---|---|
 | **AAII 散戶情緒** | 每週四晚 / 週日 | 手動下載 .xls 覆蓋 cache/，git push |
 | **FINRA 融資餘額** | 每月中 | 手動下載 .xlsx 覆蓋 cache/，git push |
-| **CBOE Put/Call 比率** | 自動逐日累積 | 第一次跑 `notebooks/bootstrap_cboe.py` 補齊 2019/10 起的歷史；GitHub Actions 每週自動補新日子；應用開頁也會補（每次最多 90 天） |
+| **CBOE Put/Call 比率** | 自動逐日累積 | 第一次跑 `scripts/bootstrap_cboe.py` 補齊 2019/10 起的歷史；GitHub Actions 每週自動補新日子；應用開頁也會補（每次最多 90 天） |
 | **NAAIM 經理人曝險** | 每週一 | 自動（GitHub Actions） |
 | **其他所有資料** | 即時 / 每日 | 自動 |
 
@@ -79,7 +79,7 @@ st.markdown("""
     - `cache/cboe_volume_oi_wide.csv` — 每天每產品的 `open_interest_call/put/total`、`volume_call/put/total`
   - **首次 bootstrap（本機，~10–15 分鐘）**：
     ```
-    .venv\Scripts\python notebooks/bootstrap_cboe.py
+    .venv\Scripts\python scripts/bootstrap_cboe.py
     ```
     從 2019-10-07 起補齊兩個檔案。Raw JSON 存 `cache/cboe_raw/`（gitignored）。
   - **應用內 fallback**：每次開頁 `_cboe_daily_cache()` 也會自動補新天數（每次最多 90 天），萬一 GHA 失敗也能補上。

@@ -188,7 +188,7 @@ with st.expander("📖 詳細說明", expanded=False):
 **注意**：殖利率突然飆升（短時間內 +50bp）比絕對水準更重要。
 """)
 try:
-    y10 = get_us10y(period="3y")
+    y10 = get_us10y(period="10y")  # need 10y to cover 2018 Q4 reference
     fig, meta = indicator_card(
         y10, unit="%", invert=False,
         description="高殖利率 = 折現率高 = 對成長股不利。",
@@ -196,6 +196,8 @@ try:
     st.plotly_chart(fig, use_container_width=True)
     if meta["value"] is not None:
         st.write(f"當前：**{meta['value']:.2f}%** · {meta['label']} · 第 {meta['pct']:.0f} 百分位")
+
+    st.info("💡 想看 10Y 殖利率在 2018Q4 / 2022 / 2024 三次熊市的走勢對比？側欄打開「📚 歷史熊市對照」頁")
 except DataUnavailable as e:
     st.warning(f"10年期殖利率無法取得：{e}")
 

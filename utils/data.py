@@ -514,7 +514,7 @@ def get_cboe_volume_oi() -> pd.DataFrame:
     if not CBOE_VOL_OI_WIDE_CSV.exists():
         raise DataUnavailable(
             "cache/cboe_volume_oi_wide.csv not found. Run "
-            "notebooks/bootstrap_cboe.py to populate it."
+            "scripts/bootstrap_cboe.py to populate it."
         )
     try:
         df = pd.read_csv(CBOE_VOL_OI_WIDE_CSV)

@@ -98,11 +98,18 @@ try:
     row = cot[cot[market_col] == pick]
     if not row.empty:
         r = row.iloc[0]
-        # Helper: pick the first column matching any of several keywords (case-insensitive)
+
+        import re as _re_cot
+        # Normalize so spaced "Open Interest (All)" and "Open_Interest_All"
+        # both become "open_interest_all" before matching.
+        def _norm(s):
+            return _re_cot.sub(r"_+", "_", _re_cot.sub(r"[^a-z0-9]", "_", str(s).lower())).strip("_")
+
+        _norm_cols = {c: _norm(c) for c in cot.columns}
+
         def pick_col(*keywords):
-            for c in cot.columns:
-                cl = str(c).lower()
-                if all(k.lower() in cl for k in keywords):
+            for c, ncol in _norm_cols.items():
+                if all(_norm(k) in ncol for k in keywords):
                     return c
             return None
 
@@ -110,40 +117,45 @@ try:
             try: return f"{int(float(v)):,}"
             except Exception: return str(v)
 
-        # Build readable positioning table
+        # Build readable positioning table. Keywords kept generic so they
+        # match both spaced TFF ("Leveraged Funds Positions Long (All)") and
+        # older underscored ("Lev_Money_Positions_Long_All") column styles.
         groups = [
             ("總未平倉量", [
-                ("Open Interest", pick_col("open_interest", "all"))]),
+                ("Open Interest", pick_col("open", "interest", "all"))]),
             ("Dealer / Intermediary（造市商，避險為主）", [
-                ("多單", pick_col("dealer", "long")),
-                ("空單", pick_col("dealer", "short")),
-                ("Spread", pick_col("dealer", "spread"))]),
+                ("多單", pick_col("dealer", "long", "all")),
+                ("空單", pick_col("dealer", "short", "all")),
+                ("Spread", pick_col("dealer", "spread", "all"))]),
             ("Asset Manager / Institutional（資產管理機構）", [
-                ("多單", pick_col("asset", "long")),
-                ("空單", pick_col("asset", "short")),
-                ("Spread", pick_col("asset", "spread"))]),
+                ("多單", pick_col("asset", "long", "all")),
+                ("空單", pick_col("asset", "short", "all")),
+                ("Spread", pick_col("asset", "spread", "all"))]),
             ("Leveraged Funds（避險基金 / CTA — 通常較積極）", [
-                ("多單", pick_col("lev", "money", "long")),
-                ("空單", pick_col("lev", "money", "short")),
-                ("Spread", pick_col("lev", "money", "spread"))]),
+                # "lev" matches both "leveraged" (new) and "lev_money" (old)
+                ("多單", pick_col("lev", "long", "all")),
+                ("空單", pick_col("lev", "short", "all")),
+                ("Spread", pick_col("lev", "spread", "all"))]),
             ("Other Reportables（其他大型可申報部位）", [
-                ("多單", pick_col("other", "rept", "long")),
-                ("空單", pick_col("other", "rept", "short")),
-                ("Spread", pick_col("other", "rept", "spread"))]),
+                ("多單", pick_col("other", "rept", "long", "all")),
+                ("空單", pick_col("other", "rept", "short", "all")),
+                ("Spread", pick_col("other", "rept", "spread", "all"))]),
             ("Non-Reportable（小型投機者 — 反指標）", [
-                ("多單", pick_col("nonrept", "long")),
-                ("空單", pick_col("nonrept", "short"))]),
+                ("多單", pick_col("nonrept", "long", "all")),
+                ("空單", pick_col("nonrept", "short", "all"))]),
         ]
 
+        any_rendered = False
         for group_name, rows in groups:
-            st.markdown(f"**{group_name}**")
             data = []
             for label, col in rows:
                 if col is not None and col in r.index:
                     val = r[col]
-                    data.append({"項目": label, "口數": fmt(val)})
+                    if pd.notna(val):
+                        data.append({"項目": label, "口數": fmt(val)})
             if data:
-                # Also compute net (long - short) for each group when applicable
+                any_rendered = True
+                st.markdown(f"**{group_name}**")
                 longs = next((d for d in data if d["項目"] == "多單"), None)
                 shorts = next((d for d in data if d["項目"] == "空單"), None)
                 if longs and shorts:
@@ -153,6 +165,31 @@ try:
                     except Exception:
                         pass
                 st.table(pd.DataFrame(data).set_index("項目"))
+
+        # Fallback: if none of the canonical groups matched (column naming
+        # changed, or this market uses a different report format like
+        # disaggregated swap-dealer/managed-money), dump every non-empty
+        # numeric position column so the data is still inspectable.
+        if not any_rendered:
+            st.warning(
+                "標準分類（Dealer / Asset Manager / Lev Funds...）的欄位都比對不到。"
+                "可能是市場用不同的報告格式（例如 disaggregated），或 CFTC 改了欄名。以下是原始數值欄位："
+            )
+            raw_rows = []
+            for col, val in r.items():
+                cl = str(col).lower()
+                if pd.isna(val):
+                    continue
+                if any(t in cl for t in ("market", "report", "as_of", "cftc_", "contract")):
+                    continue
+                try:
+                    iv = int(float(val))
+                    if iv != 0:
+                        raw_rows.append({"欄位": str(col), "值": f"{iv:,}"})
+                except (ValueError, TypeError):
+                    pass
+            if raw_rows:
+                st.dataframe(pd.DataFrame(raw_rows), hide_index=True, use_container_width=True)
 
         # Show filing/report date if available
         date_col = next((c for c in cot.columns if "report" in c.lower() and "date" in c.lower()), None)

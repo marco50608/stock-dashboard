@@ -74,6 +74,7 @@ Thumbs.db
 # ====================================================================
 utils/ml.py
 pages/6_ML_Prediction.py
+pages/6_ML預測.py
 notebooks/
 *.ipynb
 
