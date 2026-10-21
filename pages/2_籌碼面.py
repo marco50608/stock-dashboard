@@ -59,7 +59,7 @@ try:
             ))
             fig.update_layout(height=280)
             apply_hover_style(fig)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
         with c2:
             st.markdown("**年增率 %**")
             yoy = s.pct_change(12) * 100
@@ -72,7 +72,7 @@ try:
             fig.add_hline(y=50, line=dict(dash="dash", color="red"))
             fig.update_layout(height=280)
             apply_hover_style(fig)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
 except DataUnavailable as e:
     st.warning(str(e))
 
@@ -189,7 +189,7 @@ try:
                 except (ValueError, TypeError):
                     pass
             if raw_rows:
-                st.dataframe(pd.DataFrame(raw_rows), hide_index=True, use_container_width=True)
+                st.dataframe(pd.DataFrame(raw_rows), hide_index=True, width="stretch")
 
         # Show filing/report date if available
         date_col = next((c for c in cot.columns if "report" in c.lower() and "date" in c.lower()), None)
@@ -221,7 +221,7 @@ try:
     ))
     fig.update_layout(height=300, yaxis_title=f"{sym} 20 日累計成交金額")
     apply_hover_style(fig)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 except DataUnavailable as e:
     st.warning(str(e))
 
@@ -277,7 +277,7 @@ try:
         ))
         fig.update_layout(height=380, yaxis_title=f"{sym} 成交量")
         apply_hover_style(fig)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
         st.markdown("**最近 10 次異常成交日**")
         show = clip_an.tail(10).copy()
@@ -288,7 +288,7 @@ try:
             "Z 值": [f"+{v:.1f}σ" for v in show["z"]],
             "當日漲跌": [f"{v:+.2f}%" for v in show["ret_pct"]],
         })
-        st.dataframe(show_df, hide_index=True, use_container_width=True)
+        st.dataframe(show_df, hide_index=True, width="stretch")
     else:
         st.info("近期沒有 ±2σ 的異常成交日。")
 except DataUnavailable as e:
@@ -320,7 +320,7 @@ try:
             s, invert=True,
             description="高 = 經理人擁擠做多。會均值回歸。",
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
         if meta["value"] is None:
             st.warning("NAAIM 沒有可用資料")
         else:
@@ -364,7 +364,7 @@ try:
         })
         if "shares" in top20.columns:
             show["股數"] = [f"{int(v):,}" if pd.notna(v) else "—" for v in top20["shares"]]
-        st.dataframe(show, hide_index=True, use_container_width=True)
+        st.dataframe(show, hide_index=True, width="stretch")
 
         # Concentration bar chart
         fig = go.Figure(go.Bar(
@@ -379,9 +379,9 @@ try:
             title=f"{fund_pick} 前 20 大持股權重",
         )
         apply_hover_style(fig)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
     else:
-        st.dataframe(top20, hide_index=True, use_container_width=True)
+        st.dataframe(top20, hide_index=True, width="stretch")
 
     st.caption(
         f"📄 [在 SEC 看完整 filing](https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={cik}&type=13F-HR)"
@@ -451,7 +451,7 @@ try:
             hovermode="x unified",
         )
         apply_hover_style(fig)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
         c1, c2, c3 = st.columns(3)
         c1.metric("最新成交量", f"{cur_val/1e6:.1f}M 口")
@@ -494,7 +494,7 @@ try:
             hovermode="x unified",
         )
         apply_hover_style(fig2)
-        st.plotly_chart(fig2, use_container_width=True)
+        st.plotly_chart(fig2, width="stretch")
 
         if cur_ratio is not None:
             if cur_ratio > 0.65:
@@ -533,7 +533,7 @@ try:
             hovermode="x unified",
         )
         apply_hover_style(fig3)
-        st.plotly_chart(fig3, use_container_width=True)
+        st.plotly_chart(fig3, width="stretch")
 
         c1, c2 = st.columns(2)
         c1.metric("VIX OI 當前", f"{cur_oi/1e6:.1f}M 口")

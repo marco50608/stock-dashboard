@@ -9,6 +9,7 @@ from utils.data import (
     DataUnavailable,
     get_aaii_sentiment,
     get_cnn_fear_greed,
+    get_baa_spread,
     get_hy_spread,
     get_put_call_ratio,
     get_vix_term_structure,
@@ -73,7 +74,7 @@ try:
             },
         ))
         fig_gauge.update_layout(height=280, margin=dict(l=10, r=10, t=40, b=10))
-        st.plotly_chart(fig_gauge, use_container_width=True)
+        st.plotly_chart(fig_gauge, width="stretch")
 
         def _read(v):
             """previous_close etc. can be a float OR a {'score': x, 'rating': y} dict."""
@@ -113,7 +114,7 @@ try:
             fig_hist.add_hline(y=thr, line=dict(dash="dot", color=color, width=1))
         fig_hist.update_layout(height=300, yaxis_title="F&G Score", yaxis_range=[0, 100])
         apply_hover_style(fig_hist)
-        st.plotly_chart(fig_hist, use_container_width=True)
+        st.plotly_chart(fig_hist, width="stretch")
 
     # 7 sub-indicators
     st.markdown("**7 個子指標當前讀值**")
@@ -169,7 +170,7 @@ try:
         s = raw
         smooth_label = "原始值"
     fig, meta = indicator_card(s, invert=False, description="高 = 恐慌；低 = 貪婪。")
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
     if meta["value"] is None:
         st.warning(f"序列「{pick}」沒有可用資料")
     else:
@@ -221,7 +222,7 @@ try:
                                  line=dict(color=palette.get(col, "#888"), width=1.5)))
     fig.update_layout(height=400, legend=dict(orientation="h"), yaxis_title="VIX")
     apply_hover_style(fig)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
     if "^VIX9D" in vix.columns and "^VIX3M" in vix.columns:
         spread = (vix["^VIX9D"] - vix["^VIX3M"]).dropna()
@@ -232,7 +233,7 @@ try:
         fig2.add_hline(y=0, line=dict(dash="dot", color="gray"))
         fig2.update_layout(height=260)
         apply_hover_style(fig2)
-        st.plotly_chart(fig2, use_container_width=True)
+        st.plotly_chart(fig2, width="stretch")
 except DataUnavailable as e:
     st.warning(str(e))
 
@@ -277,7 +278,7 @@ try:
                                      line=dict(color=palette.get(str(col), "#888"))))
         fig.update_layout(height=350, legend=dict(orientation="h"), yaxis_title="%")
         apply_hover_style(fig)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
         spread = df[bull] - df[bear]
         st.markdown("**多空差（Bull − Bear）**")
@@ -285,7 +286,7 @@ try:
             spread, invert=True,
             description="極正 = 散戶過度樂觀（常見頂部）。極負 = 散戶過度悲觀（常見底部）。",
         )
-        st.plotly_chart(fig2, use_container_width=True)
+        st.plotly_chart(fig2, width="stretch")
         if meta["value"] is None:
             st.warning("多空差沒有可用資料")
         else:
@@ -321,17 +322,35 @@ with st.expander("📖 詳細說明", expanded=False):
 反過來說，HY 利差開始收斂時，股市底部也往往近了。
 
 **資料來源**：FRED `BAMLH0A0HYM2`，免費 API 但需要 key（已設定）。
+
+**注意**：FRED 因授權限制，現在只提供最近約 3 年（2023-10 起）的 HY 利差，所以這裡的百分位只代表「近 3 年」。
+要和 2008、2020 這種壓力比，請看下面有 40 年歷史的 **BAA − 10 年公債**。
 """)
 try:
-    hy = get_hy_spread()
+    hy = get_hy_spread() * 100      # FRED 單位是 %，換成 bp
     fig, meta = indicator_card(
         hy, unit=" bp", invert=False,
         description="利差高 = 壓力；利差低 = 風險偏好高。",
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
     if meta["value"] is None:
         st.warning("HY 利差沒有可用資料")
     else:
-        st.write(f"當前：**{meta['value']:.0f} bp** · {meta['label']} · 第 {meta['pct']:.0f} 百分位")
+        st.write(f"當前：**{meta['value']:.0f} bp** · {meta['label']} · "
+                 f"第 {meta['pct']:.0f} 百分位（只和 {hy.dropna().index[0]:%Y-%m} 以來比）")
+except DataUnavailable as e:
+    st.warning(str(e))
+
+st.markdown("**長歷史對照：Moody's BAA − 10 年公債（1986 起）**")
+try:
+    baa = get_baa_spread() * 100
+    fig, meta = indicator_card(
+        baa, unit=" bp", invert=False,
+        description="投資等級中最低一級的信用利差；和 HY 利差同向，但有 40 年歷史。",
+    )
+    st.plotly_chart(fig, width="stretch")
+    if meta["value"] is not None:
+        st.write(f"當前：**{meta['value']:.0f} bp** · {meta['label']} · 第 {meta['pct']:.0f} 百分位（1986 起）")
+    st.caption("研究結果（research/REPORT.md）：信用利差急升或從高檔回落，用來決定買賣都沒有通過驗證；這裡只描述市場。")
 except DataUnavailable as e:
     st.warning(str(e))

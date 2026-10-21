@@ -9,7 +9,7 @@ from utils.data import (
     DataUnavailable,
     find_support_levels,
     get_aaii_sentiment,
-    get_hy_spread,
+    get_baa_spread,
     get_intraday,
     get_margin_debt,
     get_price,
@@ -35,7 +35,7 @@ def render_card(col, title, fig_meta, fmt="{:.2f}"):
         col.warning(f"{title}：無資料")
         return
     col.markdown(f"**{title}**")
-    col.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    col.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
     pct = meta["pct"]
     col.markdown(
         f"**{fmt.format(meta['value'])}{meta.get('unit','')}** "
@@ -107,7 +107,7 @@ try:
             title=f"當前 ${cur_price:.2f} · 最新 bar: {intra.index[-1].strftime('%H:%M')}",
         )
         apply_hover_style(fig_intra)
-        st.plotly_chart(fig_intra, use_container_width=True)
+        st.plotly_chart(fig_intra, width="stretch")
 
         # Numeric support display — always show slots for S1 and S2
         c0, c1, c2 = st.columns(3)
@@ -153,7 +153,7 @@ with st.expander("📖 詳細說明", expanded=False):
 try:
     df = get_price(symbol, period="5y")
     fig = price_with_ma(df["Close"], mas=(50, 200))
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
     last_close = df["Close"].iloc[-1]
     ma200 = df["Close"].rolling(200).mean().iloc[-1]
     ma50 = df["Close"].rolling(50).mean().iloc[-1]
@@ -193,7 +193,7 @@ try:
         y10, unit="%", invert=False,
         description="高殖利率 = 折現率高 = 對成長股不利。",
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
     if meta["value"] is not None:
         st.write(f"當前：**{meta['value']:.2f}%** · {meta['label']} · 第 {meta['pct']:.0f} 百分位")
 
@@ -274,18 +274,20 @@ except DataUnavailable as e:
     c3.warning(f"融資餘額無法取得：{e}")
 
 try:
-    hy = get_hy_spread()
+    # FRED 的 ICE 高收益債利差只剩最近 3 年，百分位會失真；總覽改用有 40 年歷史的 BAA − 10Y
+    baa = get_baa_spread() * 100      # % → bp
     render_card(
         c4,
-        "高收益債利差（FRED · BAMLH0A0HYM2）",
+        "信用利差（Moody's BAA − 10 年公債，1986 起）",
         indicator_card(
-            hy, unit=" bp", invert=False,
-            description="高 = 信用市場壓力（常與股市底部相伴）。低 = 風險偏好高。",
+            baa, unit=" bp", invert=False,
+            description="高 = 信用市場壓力（常與股市底部相伴）。低 = 風險偏好高。"
+                        "高收益債利差在「情緒面」頁（FRED 只剩 3 年資料）。",
         ),
         fmt="{:.0f}",
     )
 except DataUnavailable as e:
-    c4.warning(f"HY 利差無法取得：{e}")
+    c4.warning(f"信用利差無法取得：{e}")
 
 st.markdown("---")
 st.caption(

@@ -7,6 +7,7 @@ Technical / Breadth — 價格行為與市場內部結構（基於 NDX-100 成�
     - NDX 漲跌家數累計（A/D Line）
     - McClellan 震盪指標（NDX 版）
     - NDX 新高 vs 新低家數
+    - 9 檔產業 SPDR 的廣度（研究用的版本：沒有倖存者偏差、可以和歷史比）
 """
 import pandas as pd
 import plotly.graph_objects as go
@@ -15,9 +16,11 @@ import streamlit as st
 from utils.data import (
     DataUnavailable,
     compute_ndx_breadth,
+    get_close,
     get_price,
 )
 from utils.plots import apply_hover_style, price_with_ma, _clip
+from utils.signals_live import SECTOR_CONFIRM, SECTOR_ETFS, sectors_at_low
 
 st.set_page_config(page_title="技術／廣度", page_icon="📈", layout="wide")
 
@@ -33,7 +36,7 @@ st.subheader("1. 價格與 20／50／200 日均線")
 try:
     df = get_price(symbol, period="5y")
     fig = price_with_ma(df["Close"], mas=(20, 50, 200))
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
     last = df["Close"].iloc[-1]
     c1, c2, c3 = st.columns(3)
     c1.metric("相對 20 日均線", f"{(last/df['Close'].rolling(20).mean().iloc[-1]-1)*100:+.2f}%")
@@ -62,6 +65,7 @@ st.subheader("2. NDX 成分股在 50／200 日均線之上的比例")
 st.caption(
     "市場廣度——健康的多頭走勢是廣的。"
     "若越來越少股票撐住指數，代表行情變窄、警訊浮現。"
+    "注意：這裡用「現在的」成分股回推過去，越早的數字越有倖存者偏差（當時表現差、後來被剔除的股票不在裡面）。"
 )
 if breadth is not None:
     fig = go.Figure()
@@ -75,7 +79,7 @@ if breadth is not None:
     fig.add_hline(y=50, line=dict(dash="dot", color="gray"))
     fig.update_layout(height=350, yaxis_title="%")
     apply_hover_style(fig)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
     cur50 = breadth["pct_above_50dma"].dropna().iloc[-1]
     cur200 = breadth["pct_above_200dma"].dropna().iloc[-1]
     c1, c2 = st.columns(2)
@@ -98,7 +102,7 @@ if breadth is not None:
                              hovertemplate="%{y:.0f}<extra>A/D</extra>"))
     fig.update_layout(height=300)
     apply_hover_style(fig)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 
 # ---------------------------------------------------------------------------
@@ -128,7 +132,7 @@ if breadth is not None:
     fig.add_hline(y=0, line=dict(dash="dot", color="gray"))
     fig.update_layout(height=300)
     apply_hover_style(fig)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
     st.metric("當前 McClellan", f"{mcc.iloc[-1]:+.1f}",
               help=f"歷史 5%/95% 分位門檻：{lower:+.1f} / {upper:+.1f}")
 
@@ -155,10 +159,44 @@ if breadth is not None:
     fig.add_hline(y=0, line=dict(dash="dot", color="gray"))
     fig.update_layout(height=300, yaxis_title="家數")
     apply_hover_style(fig)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
     cnh = nh.dropna().iloc[-1]
     cnl = nl.dropna().iloc[-1]
     c1, c2, c3 = st.columns(3)
     c1.metric("最新新高家數", int(cnh))
     c2.metric("最新新低家數", int(cnl))
     c3.metric("淨值", f"{int(cnh - cnl):+d}")
+
+
+# ---------------------------------------------------------------------------
+# 6. 9 檔產業 SPDR 廣度（研究用的版本）
+# ---------------------------------------------------------------------------
+st.markdown("---")
+st.subheader("6. 9 檔產業 SPDR 的廣度")
+st.caption(
+    "XLB、XLE、XLF、XLI、XLK、XLP、XLU、XLV、XLY。產業 ETF 不會被剔除，所以沒有倖存者偏差，可以和歷史直接比。"
+    f"研究（research/REPORT.md）：≥ {SECTOR_CONFIRM} 檔同時創一年新低代表賣壓全面化，但只算每次危機第一次時效果不顯著，"
+    "所以第 8 頁只拿它當 VIX 的確認，不單獨觸發。"
+)
+try:
+    secs = get_close(SECTOR_ETFS, period="10y")
+    n_low = sectors_at_low(secs).dropna()
+    sma200 = secs.rolling(200, min_periods=200).mean()
+    n_above = ((secs > sma200) & sma200.notna()).sum(axis=1).where(sma200.notna().any(axis=1)).dropna()
+    disp_low = n_low.loc[n_low.index >= n_low.index[-1] - pd.DateOffset(years=5)]
+    disp_up = n_above.loc[n_above.index >= n_above.index[-1] - pd.DateOffset(years=5)]
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=disp_up.index, y=disp_up.values, mode="lines", name="站上 200 日線（檔）",
+                             line=dict(color="#3498db", width=1.5), hovertemplate="%{y:.0f}"))
+    fig.add_trace(go.Bar(x=disp_low.index, y=disp_low.values, name="一年新低（檔）",
+                         marker_color="#c0392b", hovertemplate="%{y:.0f}"))
+    fig.add_hline(y=SECTOR_CONFIRM, line=dict(dash="dash", color="#c0392b", width=1),
+                  annotation_text=f"新低 ≥ {SECTOR_CONFIRM} 檔", annotation_position="top left")
+    fig.update_layout(height=320, yaxis=dict(range=[0, 9.5], title="檔數（共 9 檔）"), legend=dict(orientation="h"))
+    apply_hover_style(fig)
+    st.plotly_chart(fig, width="stretch")
+    c1, c2 = st.columns(2)
+    c1.metric("目前在一年新低", f"{int(n_low.iloc[-1])} / {secs.shape[1]} 檔")
+    c2.metric("目前站上 200 日線", f"{int(n_above.iloc[-1])} / {secs.shape[1]} 檔")
+except DataUnavailable as e:
+    st.warning(f"產業 ETF 資料無法取得：{e}")

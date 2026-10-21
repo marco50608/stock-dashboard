@@ -131,12 +131,33 @@ def get_fred_series(series_id: str, start: str = "2000-01-01") -> pd.Series:
     except DataUnavailable:
         raise
     except Exception as e:
-        raise DataUnavailable(f"FRED fetch failed for {series_id}: {e}")
+        # requests 的錯誤訊息可能含完整網址（包括 api_key），顯示前先遮掉
+        msg = str(e).replace(key, "***")
+        raise DataUnavailable(f"FRED fetch failed for {series_id}: {msg}")
 
 
 def get_hy_spread(start: str = "2000-01-01") -> pd.Series:
-    """ICE BofA US High Yield Index Option-Adjusted Spread."""
+    """ICE BofA US High Yield Index Option-Adjusted Spread（單位：%，例如 3.3 = 330 bp）。
+
+    注意：FRED 因授權限制，現在只提供最近約 3 年（2023-10 起）。用它算「歷史百分位」只代表近 3 年；
+    需要長歷史時用 get_baa_spread()。"""
     return get_fred_series("BAMLH0A0HYM2", start=start)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_cboe_index(name: str) -> pd.Series:
+    """CBOE 官方指數歷史收盤（VIX、COR3M…）。"""
+    from utils.signals_live import fetch_cboe_index
+    try:
+        return fetch_cboe_index(name)
+    except Exception as e:
+        raise DataUnavailable(f"CBOE {name} 抓不到：{e}")
+
+
+def get_baa_spread(start: str = "1986-01-01") -> pd.Series:
+    """Moody's BAA 公司債殖利率 − 10 年公債（FRED BAA10Y，1986 起，單位：%）。
+    投資等級中最低一級的信用利差；和 HY 利差高度同向，但有 40 年的歷史可以算百分位。"""
+    return get_fred_series("BAA10Y", start=start)
 
 
 # ---------------------------------------------------------------------------
@@ -358,6 +379,10 @@ def _wide_ratios_to_friendly(df_wide: pd.DataFrame) -> pd.DataFrame:
     for src, alias in CBOE_RATIO_FRIENDLY.items():
         if src in df.columns:
             out[alias] = pd.to_numeric(df[src], errors="coerce")
+    # Defensive sanity-clean: a Put/Call ratio outside a plausible band is a
+    # parse artifact (thin-volume products occasionally emit garbage like 628).
+    # Real total/index/equity P/C readings sit well within (0, 10).
+    out = out.where((out > 0) & (out < 10))
     return out.dropna(how="all")
 
 
@@ -1365,11 +1390,15 @@ def parse_13f_holdings(cik: str, accession_clean: str) -> pd.DataFrame:
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_us10y(period: str = "5y") -> pd.Series:
-    """US 10-year Treasury yield. Primary: yfinance ^TNX (divided by 10 to get %).
-    Fallback: FRED DGS10."""
+    """US 10-year Treasury yield（%）. Primary: yfinance ^TNX. Fallback: FRED DGS10.
+
+    Yahoo 的 ^TNX 以前是「殖利率 × 10」（例如 45.1），現在直接是百分比（例如 5.10）。
+    以前寫死除以 10，會把 5.10% 顯示成 0.51%；改成依數值大小判斷。"""
     try:
         df = get_price("^TNX", period=period)
-        s = df["Close"] / 10  # ^TNX is reported as basis points
+        s = df["Close"].astype(float)
+        if s.dropna().median() > 20:      # 舊格式（× 10）
+            s = s / 10
         s.name = "us10y"
         return s
     except DataUnavailable:
@@ -1504,3 +1533,103 @@ def find_support_levels(price_series: pd.Series, n: int = 2, lookback: int = 90)
             break
 
     return deduped
+
+
+# ---------------------------------------------------------------------------
+# Data freshness (Phase 0) — surface stale caches before they drive decisions
+# ---------------------------------------------------------------------------
+def get_data_freshness() -> list[dict]:
+    """Report how fresh each manually/auto-updated source is.
+
+    Returns a list of dicts: {source, last_date, age_days, stale, threshold}.
+    We use the last data date inside each file, not the file modification time
+    (after a git checkout / clone the mtime is just the download time). The
+    manually downloaded Excel files (AAII / FINRA / NAAIM) fall back to mtime
+    only if they can't be parsed. The ML row is shown only when its local
+    prediction file exists. Never raises — a broken check just reports stale.
+    """
+    import datetime as _dt
+    import json as _json
+
+    today = _dt.date.today()
+
+    def _mtime_date(path):
+        try:
+            return _dt.date.fromtimestamp(Path(path).stat().st_mtime)
+        except Exception:
+            return None
+
+    def _csv_last_date(path, col="date"):
+        try:
+            return pd.to_datetime(pd.read_csv(path)[col]).max().date()
+        except Exception:
+            return None
+
+    def _excel_last_date(path, keys, **read_kw):
+        """檔案內容裡最後一筆資料的日期；讀不到時退回檔案修改時間。"""
+        try:
+            df = pd.read_excel(path, **read_kw)
+            df.columns = [str(c).strip() for c in df.columns]
+            col = next((c for c in df.columns if any(k in c.lower() for k in keys)), df.columns[0])
+            d = pd.to_datetime(df[col], errors="coerce").dropna()
+            d = d[d <= pd.Timestamp(today)]
+            if len(d):
+                return d.max().date()
+        except Exception:
+            pass
+        return _mtime_date(path)
+
+    ml_path = Path(__file__).resolve().parent.parent / "notebooks" / "ml_predictions.json"
+
+    def _ml_run_date():
+        try:
+            ts = _json.loads(ml_path.read_text(encoding="utf-8")).get("timestamp", "")[:10]
+            return _dt.date.fromisoformat(ts) if ts else None
+        except Exception:
+            return None
+
+    def _series_last(fn):
+        try:
+            obj = fn()
+            obj = obj.dropna(how="all") if isinstance(obj, pd.DataFrame) else pd.Series(obj).dropna()
+            return obj.index.max().date()
+        except Exception:
+            return None
+
+    def _evidence_date():
+        try:
+            p = Path(__file__).resolve().parent / "signal_evidence.json"
+            return _dt.date.fromisoformat(_json.loads(p.read_text(encoding="utf-8"))["data_end"])
+        except Exception:
+            return None
+
+    from utils.signals_live import SECTOR_ETFS
+
+    rows = [
+        # 第 8 頁「進出場訊號」用的即時資料（交易日資料，門檻含週末與連假）
+        ("VIX（CBOE）", _series_last(lambda: get_cboe_index("VIX")), 5),
+        ("COR3M 隱含相關性（CBOE）", _series_last(lambda: get_cboe_index("COR3M")), 5),
+        ("9 檔產業 ETF（Yahoo）", _series_last(lambda: get_close(SECTOR_ETFS, period="1mo")), 5),
+        # 研究證據檔：每年重跑一次研究（research/run_all.py）
+        ("研究證據檔（signal_evidence.json）", _evidence_date(), 400),
+        ("CBOE Put/Call", _csv_last_date(CBOE_RATIOS_WIDE_CSV) or _mtime_date(CBOE_RATIOS_WIDE_CSV), 7),
+        # 週資料（AAII 週四、NAAIM 週三）
+        ("AAII 散戶情緒", _excel_last_date(CACHE_DIR / "aaii_sentiment.xls", ("date", "week"),
+                                       sheet_name="SENTIMENT", skiprows=3), 10),
+        ("NAAIM 經理人曝險", _excel_last_date(CACHE_DIR / "naaim.xlsx", ("date", "week")), 10),
+        # 月資料，日期是月初；FINRA 約在次月第三週公布，所以最新一筆本來就有 50 天左右
+        ("FINRA 融資餘額", _excel_last_date(CACHE_DIR / "finra_margin.xlsx", ("year", "month", "date")), 85),
+    ]
+    if ml_path.exists():  # ML 預測檔只在本機（notebooks/ 不進 git）
+        rows.append(("ML 預測", _ml_run_date(), 14))
+    out = []
+    for name, last, thr in rows:
+        age = (today - last).days if last else None
+        out.append({
+            "source": name,
+            "last_date": last.isoformat() if last else "—",
+            "age_days": age,
+            "stale": (age is None) or (age > thr),
+            "threshold": thr,
+        })
+    return out

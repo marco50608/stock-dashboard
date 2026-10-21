@@ -45,6 +45,8 @@ cache/*
 # Canonical CBOE files used by the app (kept small + committed):
 !cache/cboe_ratios_wide.csv
 !cache/cboe_volume_oi_wide.csv
+# 每週訊號紀錄（GitHub Actions 寫入並 commit；scripts/log_signals.py）
+!cache/signal_log.csv
 
 # Redundant / large CBOE artifacts — keep local-only, do not commit.
 # (Wide versions above contain the same info in a smaller, app-friendly shape.)

@@ -15,7 +15,7 @@ import streamlit as st
 from utils.data import (
     DataUnavailable,
     get_aaii_sentiment,
-    get_hy_spread,
+    get_baa_spread,
     get_naaim,
     get_price,
     get_put_call_ratio,
@@ -60,7 +60,7 @@ def section(title: str, intro: str, series, value_label: str = "value"):
         return
     fig = compare_historical_bears(series, title="", value_label=value_label)
     if fig is not None:
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
     st.markdown("---")
 
 
@@ -82,9 +82,10 @@ with st.spinner("載入 10 年歷史資料中..."):
     except DataUnavailable as e:
         errs.append(f"10Y: {e}")
     try:
-        hy = get_hy_spread()
+        # FRED 的 HY 利差只剩最近 3 年，無法和 2018/2022 對照；改用 BAA − 10Y（1986 起）
+        hy = get_baa_spread() * 100
     except DataUnavailable as e:
-        errs.append(f"HY: {e}")
+        errs.append(f"信用利差: {e}")
     try:
         pc_df = get_put_call_ratio()
         pc = pc_df.iloc[:, 0].astype(float).dropna().rolling(5).mean()
@@ -136,10 +137,11 @@ section(
 )
 
 section(
-    "4. 高收益債利差 (HY OAS)",
-    "信用市場壓力。利差擴張時通常與股市底部同時發生。看現在的利差走勢是否在累積壓力。",
+    "4. 信用利差（Moody's BAA − 10 年公債）",
+    "信用市場壓力。利差擴張時通常與股市底部同時發生。看現在的利差走勢是否在累積壓力。"
+    "（原本用高收益債利差，但 FRED 現在只提供最近 3 年，無法和 2018、2022 對照。）",
     hy,
-    "HY bp",
+    "BAA−10Y bp",
 )
 
 section(

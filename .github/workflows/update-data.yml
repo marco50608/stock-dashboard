@@ -251,6 +251,15 @@ jobs:
                   print(f"NAAIM error: {e}")
           PY
 
+      - name: Log weekly signal state
+        # 進出場訊號紀錄：把「全面恐慌」觀察燈（VIX、產業 ETF 新低、COR3M）的狀態
+        # 寫進 cache/signal_log.csv，累積上線後才有的樣本外資料（見 research/REPORT.md 第 6 節）。
+        # 只多裝 yfinance；失敗不影響其他資料更新。同一個資料日重跑不會重複。
+        continue-on-error: true
+        run: |
+          pip install "yfinance>=0.2.40"
+          python scripts/log_signals.py QQQ
+
       - name: Commit & push if changed
         run: |
           git config user.name "github-actions[bot]"

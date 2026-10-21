@@ -37,7 +37,7 @@ try:
     const = get_ndx_constituents()
     if "weight_pct" not in const.columns:
         st.warning("slickcharts 沒給權重欄位，僅顯示成分股清單")
-        st.dataframe(const.head(25), hide_index=True, use_container_width=True)
+        st.dataframe(const.head(25), hide_index=True, width="stretch")
     else:
         const_sorted = const.sort_values("weight_pct", ascending=False).reset_index(drop=True)
 
@@ -53,7 +53,7 @@ try:
         show = const_sorted.head(25)[[c for c in ["Symbol", "Company", "weight_pct"] if c in const_sorted.columns]].copy()
         show["weight_pct"] = show["weight_pct"].map(lambda v: f"{v:.2f}%")
         show.columns = ["代號"] + (["名稱"] if "Company" in const_sorted.columns else []) + ["權重"]
-        st.dataframe(show, hide_index=True, use_container_width=True)
+        st.dataframe(show, hide_index=True, width="stretch")
 
         # Bar chart of Mag 7 weights (sorted desc)
         mag7_df = const_sorted[const_sorted["Symbol"].isin(MAG7)].sort_values("weight_pct", ascending=False)
@@ -68,7 +68,7 @@ try:
             ))
             fig.update_layout(height=320, yaxis_title="權重 %", title="七巨頭在 NDX 的權重")
             apply_hover_style(fig)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
 except DataUnavailable as e:
     st.warning(str(e))
 
@@ -93,7 +93,7 @@ try:
         ))
     fig.update_layout(height=400, legend=dict(orientation="h"), yaxis_title="標準化（起點=100）")
     apply_hover_style(fig)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
     rel_30 = (px_full.pct_change(30).iloc[-1] - px_full["QQQ"].pct_change(30).iloc[-1]) * 100
     rel_30 = rel_30.drop("QQQ").sort_values(ascending=False)
@@ -108,7 +108,7 @@ try:
     ))
     fig_rel.update_layout(height=300, yaxis_title="%")
     apply_hover_style(fig_rel)
-    st.plotly_chart(fig_rel, use_container_width=True)
+    st.plotly_chart(fig_rel, width="stretch")
 except DataUnavailable as e:
     st.warning(str(e))
 
@@ -145,7 +145,7 @@ try:
             lambda v: f"${v/1e9:.0f}B" if pd.notna(v) and v else "—"
         )
         show.columns = ["代號", "名稱", "30日漲幅", "Trailing P/E", "Forward P/E", "市值"]
-        st.dataframe(show, hide_index=True, use_container_width=True)
+        st.dataframe(show, hide_index=True, width="stretch")
 
         # Spread between trailing and forward — a simple "expected growth" view
         spread_rows = []
@@ -168,7 +168,7 @@ try:
                 title="正值＝預期獲利成長；負值＝預期獲利衰退",
             )
             apply_hover_style(fig_pe)
-            st.plotly_chart(fig_pe, use_container_width=True)
+            st.plotly_chart(fig_pe, width="stretch")
 except DataUnavailable as e:
     st.warning(str(e))
 
@@ -193,7 +193,7 @@ try:
                              hovertemplate="%{y:.4f}<extra>50d MA</extra>"))
     fig.update_layout(height=350)
     apply_hover_style(fig)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
     last = ratio.iloc[-1]
     ma50_last = ma50_full.iloc[-1]
     st.metric("SMH/QQQ 相對 50 日均線", f"{(last/ma50_last-1)*100:+.2f}%",
@@ -223,7 +223,7 @@ try:
     fig.add_hline(y=1.0, line=dict(dash="dot", color="gray"))
     fig.update_layout(height=350)
     apply_hover_style(fig)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
     cur = norm.iloc[-1]
     if cur < 0.95:
         st.warning(f"QQEW/QQQ = {cur:.3f}——顯著低於基準，領導集中於少數股。")

@@ -20,6 +20,35 @@ if "symbol" not in st.session_state:
 st.title("📊 美股儀表板")
 st.caption(f"最後重新整理：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
+# --- 資料新鮮度橫幅 (Phase 0) — 過期資料是最危險的決策輸入，先攔下來 ---
+try:
+    from utils.data import get_data_freshness
+    _fresh = get_data_freshness()
+    _stale = [f for f in _fresh if f["stale"]]
+    if _stale:
+        _msg = "、".join(
+            f"{f['source']}（{f['last_date']}"
+            + (f"，{f['age_days']} 天前）" if f["age_days"] is not None else "）")
+            for f in _stale
+        )
+        st.warning(f"⚠️ 以下資料可能過期，決策前請先更新：{_msg}")
+    else:
+        st.success("✅ 所有資料來源都在新鮮範圍內")
+    with st.expander("📅 各資料源新鮮度", expanded=False):
+        st.dataframe(
+            {
+                "來源": [f["source"] for f in _fresh],
+                "最後資料/更新日": [f["last_date"] for f in _fresh],
+                "幾天前": [f["age_days"] for f in _fresh],
+                "門檻(天)": [f["threshold"] for f in _fresh],
+                "狀態": ["⚠️ 過期" if f["stale"] else "✅ OK" for f in _fresh],
+            },
+            width="stretch",
+            hide_index=True,
+        )
+except Exception:
+    pass
+
 c1, c2 = st.columns([1, 5])
 with c1:
     symbol = st.text_input(
@@ -79,7 +108,7 @@ st.markdown("""
     - `cache/cboe_volume_oi_wide.csv` — 每天每產品的 `open_interest_call/put/total`、`volume_call/put/total`
   - **首次 bootstrap（本機，~10–15 分鐘）**：
     ```
-    .venv\Scripts\python scripts/bootstrap_cboe.py
+    .venv/Scripts/python scripts/bootstrap_cboe.py
     ```
     從 2019-10-07 起補齊兩個檔案。Raw JSON 存 `cache/cboe_raw/`（gitignored）。
   - **應用內 fallback**：每次開頁 `_cboe_daily_cache()` 也會自動補新天數（每次最多 90 天），萬一 GHA 失敗也能補上。
