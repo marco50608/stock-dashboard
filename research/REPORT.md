@@ -360,6 +360,13 @@
 >   - 各頁的 `use_container_width` 改成新版寫法。
 >   - `app.py` 的無效跳脫字元。
 >
+> 2026-10-21 另外修正第 8 頁和每日簡報（獨立驗證時發現，不影響研究結論）：
+> - 燈號改用研究的加碼期間規則：VIX 收盤首次站上 40 觸發，之後 126 個交易日是「加碼期間」，期間內再觸發重新起算（和 overlay 回測逐日一致）。原本只看當天 VIX，同一次危機會反覆叫你買、或幾天後又改說「先不動」。
+> - 只用已收盤的日線（依紐約時間），所有來源對齊到 VIX 的資料日；資料落後最近一個交易日 3 天以上顯示「資料過期」，抓不到 VIX 顯示「無法判斷」，警告放在最上方。CBOE 回傳空檔時改用 Yahoo。
+> - 加碼計算器改成依今天的股票市值和現金，算出買完的實際股票比例。
+> - 再經 7 個代理獨立攻擊後補修：期間內再觸發仍是「加碼期間」（不再叫你買第二次）；CBOE 檔裡休市日的夜盤報價不算（和研究的交易日曆逐日一致）；CBOE 收盤後要幾個小時才更新，期間用 Yahoo ^VIX 補上最新的收盤；VIX 過期但期間一定還沒結束時照樣顯示加碼期間；期間結束時提醒調回平常比例；每週紀錄不會用過期資料蓋掉準時的紀錄；輸入框連續修改不再被吃掉。
+> - 測試：`tests/test_live_fixes.py`（每個問題至少一個情境）、`tests/test_page8_render.py`（頁面情境）。
+>
 > (4) 也在 2026-10-20 經你同意後加上了：
 > - `update-data.yml` 多一步「Log weekly signal state」，排程不變，失敗不影響其他步驟。
 > - 這一步執行 `scripts/log_signals.py`，寫入 `cache/signal_log.csv`。
@@ -372,10 +379,12 @@
   - COR3M
   - 9 檔產業 SPDR 中創一年新低的檔數
   - NDX 距高點跌幅（只當作脈絡）
-- 回傳三種狀態：
+- 回傳的狀態：
   - **正常**
   - **留意**：VIX ≥ 30
-  - **全面恐慌**：VIX ≥ 40
+  - **全面恐慌**：VIX 收盤首次站上 40 的那一天
+  - **加碼期間**：觸發後 126 個交易日（期間內再觸發重新起算）
+  - **資料過期**／**無法判斷**：VIX 資料太舊或抓不到
 - COR3M 和「≥ 4 檔 ETF 同時創一年新低」只當作確認，顯示為「賣壓已全面化」。
 - 另外回傳上次觸發日、距今天數。
 - 讀 `research/results/` 的歷史事件表給頁面用。不在頁面上即時重跑研究。
@@ -449,7 +458,8 @@ PYTHONUTF8=1 .venv/Scripts/python research/export_evidence.py     # 更新儀表
 
 ```bash
 PYTHONUTF8=1 .venv/Scripts/python tests/test_signals_live.py       # 儀表板訊號模組的單元測試
-PYTHONUTF8=1 .venv/Scripts/python tests/test_page8_render.py       # 第 8 頁離線渲染測試（正常／全面恐慌）
+PYTHONUTF8=1 .venv/Scripts/python tests/test_live_fixes.py         # 加碼期間、資料過期、收盤日線對齊、計算器
+PYTHONUTF8=1 .venv/Scripts/python tests/test_page8_render.py       # 第 8 頁離線渲染測試（各種狀態與資料問題）
 ```
 
 所有隨機檢定都有固定種子，結果可以完全重現。資料更新後重跑，數字會隨新資料改變。

@@ -79,12 +79,12 @@ def test_state_and_plan():
     v = pd.Series(18.0, index=idx)
     v.iloc[-1] = 42
     res = L.capitulation_state(v)
-    check("只有 VIX 也能判斷狀態", res["state"] == L.STATE_PANIC and res["confirmations"] == [])
-    p = L.overweight_plan(L.STATE_PANIC, total_assets=1_000_000, base_equity_pct=40, tilt_pp=10,
+    check("只有 VIX 也能判斷狀態（今天剛站上 40 → 全面恐慌）", res["state"] == L.STATE_PANIC and res["confirmations"] == [])
+    p = L.overweight_plan(L.STATE_PANIC, stock_value=400_000, cash=600_000, base_equity_pct=40, tilt_pp=10,
                           cash_bucket=60_000, hold_months=6)
     check("加碼金額受現金桶限制（想加 10 萬、只有 6 萬）", p["amount"] == 60_000 and p["limited_by_cash"])
-    p2 = L.overweight_plan(L.STATE_NORMAL, 1_000_000, 40, 10, 500_000, 6)
-    check("沒有全面恐慌時建議金額為 0", p2["amount"] == 0 and p2["amount_if_triggered"] == 100_000)
+    p2 = L.overweight_plan(L.STATE_NORMAL, 400_000, 600_000, 40, 10, 500_000, 6)
+    check("不是加碼期間時建議金額為 0", p2["amount"] == 0 and p2["amount_if_triggered"] == 100_000)
 
 
 def test_brief_and_evidence():
