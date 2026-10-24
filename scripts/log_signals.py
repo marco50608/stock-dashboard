@@ -27,7 +27,7 @@ sys.path.insert(0, str(ROOT))
 from utils import signals_live as L  # noqa: E402  （這個模組在 import 時不會載入 streamlit）
 
 LOG_PATH = ROOT / "cache" / "signal_log.csv"
-COLUMNS = ["data_date", "logged_at_utc", "symbol", "state", "vix", "vix_to_panic", "vix_via", "window_trigger",
+COLUMNS = ["data_date", "logged_at_utc", "symbol", "state", "level", "vix", "vix_to_panic", "vix_via", "window_trigger",
            "window_since", "window_remaining", "sectors_at_low", "sectors_of", "cor3m", "cor3m_pct",
            "confirmations", "close", "from_high", "trend10m_above", "last_panic", "expected_session",
            "stale_sources", "evidence_generated", "warnings"]
@@ -52,6 +52,7 @@ def build_row(symbol: str = "QQQ") -> dict:
         "logged_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "symbol": symbol,
         "state": res["state"],
+        "level": L.market_level(res)["level"],
         "vix": round(vs["value"], 2),
         "vix_to_panic": round(vs["to_panic"], 2),
         "vix_via": fr["sources"]["vix"].get("via"),

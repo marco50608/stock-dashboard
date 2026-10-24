@@ -457,6 +457,90 @@ def test_round2():
 
 
 # ---------------------------------------------------------------------------
+# 目前等級（第 8 頁最上方）
+# ---------------------------------------------------------------------------
+def test_levels():
+    idx = pd.bdate_range(end="2026-10-20", periods=400)
+
+    def lvl(v):
+        return L.market_level(L.capitulation_state(v))["level"]
+
+    v = pd.Series(18.0, index=idx)
+    check("VIX 18 → 第 1 級", lvl(v) == 1)
+    v.iloc[-1] = 25
+    check("VIX 25 → 第 2 級", lvl(v) == 2)
+    v.iloc[-1] = 31
+    check("VIX 31（不在加碼期間）→ 第 3 級", lvl(v) == 3)
+    v.iloc[-1] = 45
+    check("今天首次站上 40 → 第 4 級", lvl(v) == 4)
+    v2 = pd.Series(18.0, index=idx)
+    v2.iloc[-5] = 45
+    check("加碼期間中（VIX 已回到 18）→ 第 4 級", lvl(v2) == 4)
+    v3 = pd.Series(18.0, index=idx)
+    v3.iloc[-140:] = 45
+    check("VIX 一直在 40 以上但加碼期間已結束 → 第 3 級", lvl(v3) == 3)
+    check("抓不到 VIX → 0 級（無法分級）",
+          L.market_level(L.capitulation_state(pd.Series(dtype=float)))["level"] == 0)
+    res = run_pipeline(raw_data("2026-09-25"), ny(2026, 10, 20, 18, 0))
+    check("VIX 過期 → 0 級（無法分級）", L.market_level(res)["level"] == 0)
+
+    ev = L.load_evidence()
+    lv = (ev.get("vix_levels") or {}).get("levels", [])
+    check("證據檔有 4 個等級的歷史統計，占比加起來是 100%",
+          [x["level"] for x in lv] == [1, 2, 3, 4] and abs(sum(x["share"] for x in lv) - 1) < 0.002)
+    check("等級越高，歷史上之後 3 個月的平均越好（第 1、2 級接近，第 4 級最好）",
+          lv[3]["mean_63"] > lv[2]["mean_63"] > max(lv[0]["mean_63"], lv[1]["mean_63"]))
+    r = L.capitulation_state(v2)
+    r["evidence"] = ev
+    ps = L.plain_summary(r)
+    check("白話結論：第 4 級、寫出歷史表現", ps["level"] == 4 and ps["title"].startswith("第 4 級")
+          and "歷史上（1990 起）第 4 級之後 3 個月" in (ps["history"] or ""))
+    check("簡報第一段寫出目前等級", "目前等級：第 4 級（共 4 級）：全面恐慌／加碼期間" in L.format_brief(r))
+    r0 = L.capitulation_state(pd.Series(dtype=float))
+    check("無法分級時白話結論不寫歷史表現", L.plain_summary(r0)["history"] is None)
+
+
+# ---------------------------------------------------------------------------
+# 出場參考（第 8 頁右上）
+# ---------------------------------------------------------------------------
+def test_exit_summary():
+    ev = L.load_evidence()
+    er = ev.get("exit_rules") or {}
+    check("證據檔有出場規則的總結：測了 40 個、通過 0 個", er.get("n_tested") == 40 and er.get("n_passed") == 0
+          and (er.get("vix_high_riskoff") or {}).get("alpha", 0) < 0)
+    days = pd.bdate_range("2023-01-02", "2026-10-20")
+    up = pd.Series(np.linspace(100, 200, len(days)), index=days)
+    down = pd.Series(np.linspace(200, 100, len(days)), index=days)
+    calm = pd.Series(18.0, index=days)
+
+    def ex(vix, px):
+        r = L.capitulation_state(vix, px=px)
+        r["evidence"] = ev
+        return L.exit_summary(r)
+
+    e = ex(calm, up)
+    txt = " ".join(e["items"])
+    check("平常、在 10 個月均線之上 → 沒有要照規則減碼的部位", e["title"] == "沒有要照規則減碼的部位")
+    check("出場參考寫出均線位置、它的歷史代價、40 個規則通過 0 個、VIX ≥ 30 就出場最差",
+          "在均線之上" in txt and "一直持有" in txt and "研究測了 40 個出場規則，通過 0 個" in txt
+          and "「VIX ≥ 30 就出場」每年比固定比例少 4.8%" in txt)
+    check("跌破 10 個月均線 → 標題說只有選它當保險才出場",
+          ex(calm, down)["title"] == "10 個月均線跌破：只有你選它當保險才出場")
+    hold = calm.copy()
+    hold.iloc[-5] = 45.0
+    e = ex(hold, down)
+    check("加碼期間中（即使均線跌破）→ 先不調回", e["title"] == "加碼期間中：先不調回" and "約到" in e["items"][0])
+    ended = calm.copy()
+    ended.iloc[-130] = 45.0
+    check("加碼期間剛結束 → 照手冊調回平常比例", ex(ended, up)["title"] == "加碼期間已結束：照手冊調回平常比例")
+    r = L.capitulation_state(pd.Series(dtype=float), px=up)
+    r["evidence"] = ev
+    check("抓不到 VIX → 資料有問題，先不做任何調整", L.exit_summary(r)["title"] == "資料有問題，先不做任何調整")
+    r = L.capitulation_state(calm)
+    check("沒有證據檔、沒有價格也不會壞", L.exit_summary(r)["title"] == "沒有要照規則減碼的部位")
+
+
+# ---------------------------------------------------------------------------
 # 每週訊號紀錄（scripts/log_signals.py）走同一套流程
 # ---------------------------------------------------------------------------
 def test_log_signals():
@@ -503,7 +587,8 @@ def test_log_signals():
 
 if __name__ == "__main__":
     for f in [test_calendar, test_bug1_missing_vix, test_bug2_stale, test_bug3_window, test_bug4_calculator,
-              test_bug5_closed_bars, test_minor_sectors_and_params, test_round2, test_log_signals]:
+              test_bug5_closed_bars, test_minor_sectors_and_params, test_round2, test_levels, test_exit_summary,
+              test_log_signals]:
         print(f.__name__)
         f()
     print("\n全部通過" if not FAILS else f"\n失敗：{FAILS}")

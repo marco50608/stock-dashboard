@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-19",
+ "generated": "2026-10-24",
  "data_end": "2026-10-16",
  "n_variants_tested": 106,
  "n_entry_variants": 66,
@@ -325,6 +325,81 @@
    }
   ]
  },
+ "vix_levels": {
+  "start": "1990-01-02",
+  "end": "2026-07-17",
+  "asset": "NDX",
+  "levels": [
+   {
+    "level": 1,
+    "episodes": 231,
+    "days": 5515,
+    "share": 0.5993,
+    "mean_63": 0.0333,
+    "median_63": 0.0402,
+    "hit_63": 0.7046,
+    "p05_63": -0.1104,
+    "worst_63": -0.4614,
+    "mean_126": 0.0772,
+    "mean_63_pre2013": 0.0267,
+    "mean_63_post2013": 0.0421
+   },
+   {
+    "level": 2,
+    "episodes": 280,
+    "days": 1960,
+    "share": 0.213,
+    "mean_63": 0.0304,
+    "median_63": 0.0534,
+    "hit_63": 0.6199,
+    "p05_63": -0.2841,
+    "worst_63": -0.4547,
+    "mean_126": 0.0612,
+    "mean_63_pre2013": 0.0253,
+    "mean_63_post2013": 0.0472
+   },
+   {
+    "level": 3,
+    "episodes": 53,
+    "days": 166,
+    "share": 0.018,
+    "mean_63": 0.06,
+    "median_63": 0.0642,
+    "hit_63": 0.6807,
+    "p05_63": -0.2505,
+    "worst_63": -0.312,
+    "mean_126": 0.1344,
+    "mean_63_pre2013": 0.0841,
+    "mean_63_post2013": 0.0176
+   },
+   {
+    "level": 4,
+    "episodes": 9,
+    "days": 1561,
+    "share": 0.1696,
+    "mean_63": 0.0934,
+    "median_63": 0.0916,
+    "hit_63": 0.8046,
+    "p05_63": -0.1072,
+    "worst_63": -0.2853,
+    "mean_126": 0.1593,
+    "mean_63_pre2013": 0.0946,
+    "mean_63_post2013": 0.0911
+   }
+  ],
+  "all": {
+   "days": 9202,
+   "share": 1.0,
+   "mean_63": 0.0433,
+   "median_63": 0.0493,
+   "hit_63": 0.7031,
+   "p05_63": -0.1689,
+   "worst_63": -0.4614,
+   "mean_126": 0.0888,
+   "mean_63_pre2013": 0.0392,
+   "mean_63_post2013": 0.0503
+  }
+ },
  "reserve_ndx": [
   {
    "variant": "dd_tranche[level=0.1]",
@@ -389,6 +464,31 @@
   "bh_maxdd": -0.8296,
   "matched_maxdd": -0.7104,
   "oos_alpha": -0.0153
+ },
+ "exit_rules": {
+  "n_tested": 40,
+  "n_passed": 0,
+  "best": {
+   "variant": "fomc_even_weeks",
+   "title": "FOMC 週期：只在第 0、2、4、6 週持有",
+   "alpha": 0.0363,
+   "t": 1.58,
+   "alpha_oos": -0.0282
+  },
+  "worst": {
+   "variant": "vix_high_riskoff",
+   "title": "VIX ≥ 30 出場，< 25 回來",
+   "alpha": -0.0477,
+   "t": -2.46,
+   "alpha_oos": -0.0435
+  },
+  "vix_high_riskoff": {
+   "variant": "vix_high_riskoff",
+   "title": "VIX ≥ 30 出場，< 25 回來",
+   "alpha": -0.0477,
+   "t": -2.46,
+   "alpha_oos": -0.0435
+  }
  },
  "rejected": [
   {

@@ -25,8 +25,9 @@ st.set_page_config(page_title="進出場訊號", page_icon="🎯", layout="wide"
 
 symbol = st.session_state.get("symbol", "QQQ")
 st.title(f"🎯 進出場訊號 — {symbol}")
-st.caption("依 research/REPORT.md：106 個訊號變體嚴格驗證後，沒有一個通過。"
-           "這頁只做「提醒和紀錄」，不是交易訊號，也不是投資建議。")
+st.info("**這頁依目前的資料把市場分成 4 個等級**（數字越大，歷史上之後 3 個月的表現越好），"
+        "並照你手冊的規則列出每個等級該做的事，幫你判斷要不要動用現金桶加碼。"
+        "要不要買、買多少最後由你決定；這是歷史統計和你自己規則的檢查，不是投資建議。")
 
 ROOT = Path(__file__).resolve().parent.parent
 PARAMS_PATH = ROOT / "cache" / "entry_params.json"
@@ -102,29 +103,66 @@ if res.get("incomplete") and st.button("🔄 重新抓取資料"):
 # ---------------------------------------------------------------------------
 # 上方兩張卡
 # ---------------------------------------------------------------------------
-STYLE = {L.STATE_PANIC: ("#1E7A46", "🟢"), L.STATE_HOLD: ("#1E7A46", "🟢"), L.STATE_WATCH: ("#B9770E", "🟡"),
-         L.STATE_NORMAL: ("#34495E", "⚪"), L.STATE_STALE: ("#922B21", "⚠️"), L.STATE_UNKNOWN: ("#922B21", "⚠️")}
-box, emoji = STYLE.get(state, ("#7f8c8d", "⚪"))
+STYLE = {L.STATE_PANIC: "🟢", L.STATE_HOLD: "🟢", L.STATE_WATCH: "🟡", L.STATE_NORMAL: "⚪",
+         L.STATE_STALE: "⚠️", L.STATE_UNKNOWN: "⚠️"}
+emoji = STYLE.get(state, "⚪")
+plain = L.plain_summary(res)
+LEVEL_COLOR = {0: "#922B21", 1: "#1F4E79", 2: "#34495E", 3: "#B9770E", 4: "#1E7A46"}
+box = LEVEL_COLOR.get(plain["level"], "#7f8c8d")
+gauge = "".join(
+    f"<span style='flex:1;text-align:center;padding:4px 0;border-radius:6px;font-size:12px;"
+    + ("background:#fff;color:#1b1b1b;font-weight:700" if k == plain["level"] else "background:rgba(255,255,255,.18)")
+    + f"'>{k} {L.LEVELS[k]['short']}</span>"
+    for k in (1, 2, 3, 4))
 
 c1, c2 = st.columns(2)
 with c1:
     st.markdown(
-        "<div style='background:#1F4E79;color:#fff;padding:14px 18px;border-radius:10px;min-height:150px'>"
-        "<span style='font-size:13px;opacity:.85'>新存的錢</span><br>"
-        "<span style='font-size:22px;font-weight:700'>照計畫直接買</span><br>"
-        "<span style='font-size:14px'>不要留一部分等恐慌。研究裡每一個訊號（包括 VIX ≥ 40），"
-        "「一半先放現金等訊號」的期末財富都比直接買少。</span></div>",
+        f"<div style='background:{box};color:#fff;padding:14px 18px;border-radius:10px;min-height:170px'>"
+        "<span style='font-size:13px;opacity:.85'>目前等級（依今天的資料）</span><br>"
+        f"<span style='font-size:22px;font-weight:700'>{plain['title']}</span>"
+        f"<div style='display:flex;gap:6px;margin:8px 0'>{gauge}</div>"
+        f"<span style='font-size:14px'>{plain['body']}</span><br>"
+        + (f"<span style='font-size:13px;opacity:.9'>{plain['history']}</span><br>" if plain.get("history") else "")
+        + "<span style='font-size:12px;opacity:.75'>這是分級和你自己規則的檢查，不是買賣建議。</span></div>",
         unsafe_allow_html=True)
 with c2:
-    conf = "；賣壓已全面化：" + "、".join(res["confirmations"]) if res.get("confirmations") else ""
+    ex = L.exit_summary(res)
+    ex_items = "".join(f"<li style='margin:3px 0'>{x}</li>" for x in ex["items"])
     st.markdown(
-        f"<div style='background:{box};color:#fff;padding:14px 18px;border-radius:10px;min-height:150px'>"
-        f"<span style='font-size:13px;opacity:.85'>恐慌觀察燈（觀察名單，未通過多重檢定）</span><br>"
-        f"<span style='font-size:22px;font-weight:700'>{emoji} {state or '—'}</span><br>"
-        f"<span style='font-size:14px'>{L.state_headline(res)}{conf}</span></div>",
+        "<div style='background:#2C3E50;color:#fff;padding:14px 18px;border-radius:10px;min-height:170px'>"
+        "<span style='font-size:13px;opacity:.85'>出場參考（研究裡沒有任何出場訊號通過驗證）</span><br>"
+        f"<span style='font-size:22px;font-weight:700'>{ex['title']}</span>"
+        f"<ul style='font-size:13.5px;padding-left:18px;margin:8px 0'>{ex_items}</ul>"
+        f"<span style='font-size:12px;opacity:.75'>{ex['footer']}</span></div>",
         unsafe_allow_html=True)
-
-st.write("")
+conf = "；賣壓已全面化：" + "、".join(res["confirmations"]) if res.get("confirmations") else ""
+with st.container(border=True):
+    st.markdown(f"**恐慌觀察燈**（細節；觀察名單，未通過多重檢定）：{emoji} {state or '—'}　"
+                f"{L.state_headline(res)}{conf}")
+lv_hist = (ev.get("vix_levels") or {})
+if lv_hist.get("levels"):
+    st.markdown("#### 四個等級")
+    rows_ = []
+    for h in lv_hist["levels"]:
+        k = h["level"]
+        rows_.append({"": "▶ 現在" if k == plain["level"] else "",
+                      "等級": f"{k} {L.LEVELS[k]['name']}", "條件": L.LEVELS[k]["rule"],
+                      "之後 3 個月 NDX 平均": _pct(h["mean_63"]), "正報酬比例": _pct(h["hit_63"], 0, False),
+                      "最差 5%": _pct(h["p05_63"], 0), "照你手冊的動作": L.LEVELS[k]["action"],
+                      "占交易日": _pct(h["share"], 0, False)})
+    allh = lv_hist.get("all") or {}
+    rows_.append({"": "", "等級": "所有日子", "條件": "—",
+                  "之後 3 個月 NDX 平均": _pct(allh.get("mean_63")), "正報酬比例": _pct(allh.get("hit_63"), 0, False),
+                  "最差 5%": _pct(allh.get("p05_63"), 0), "照你手冊的動作": "—", "占交易日": "100%"})
+    st.dataframe(pd.DataFrame(rows_), width="stretch", hide_index=True)
+    l3 = next((h for h in lv_hist["levels"] if h["level"] == 3), {})
+    l4 = next((h for h in lv_hist["levels"] if h["level"] == 4), {})
+    st.caption(f"{lv_hist.get('start', '')[:4]}–{lv_hist.get('end', '')[:4]}，NDX，隔天收盤買進。"
+               "每天的觀察值彼此重疊，所以這是描述性的統計："
+               f"第 4 級只來自約 {l4.get('episodes', '—')} 段加碼期間，第 3 級 2013 年後平均只有 "
+               f"{_pct(l3.get('mean_63_post2013'))}，都沒有通過多重檢定。"
+               "另外，研究的現金部署模擬顯示：不管在哪個等級，新錢照計畫投入都比留著等更高等級好。")
 
 
 def _stale_note(d: dict) -> str:

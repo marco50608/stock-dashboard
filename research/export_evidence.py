@@ -67,6 +67,51 @@ def entry_summary(e: pd.DataFrame, v: pd.DataFrame, variant: str) -> dict:
             "worst_63": G("NDX", "full", "h63_worst")}
 
 
+def vix_levels(B: Bundle) -> dict:
+    """第 8 頁「目前等級」的歷史對照：每天依 VIX 分成 4 級，之後 3、6 個月 NDX 的表現（隔天收盤買進）。
+
+    第 4 級 = 加碼期間（VIX 收盤首次站上 40 後 126 個交易日，和 overlay 研究相同）；
+    第 3 級 = VIX ≥ 30 但不在加碼期間；第 2 級 = 20 ≤ VIX < 30；第 1 級 = VIX < 20。
+    這是描述性統計：每天的觀察值彼此重疊，第 4 級只來自約 9 次危機，沒有經過多重檢定。
+    分級的門檻要和 utils/signals_live.py 的 market_level() 一致。
+    """
+    vix = B.cboe("VIX")
+    ndx = B.px("NDX")
+    win = edge(vix >= 40, vix).fillna(0).rolling(126, min_periods=1).max() > 0
+    lvl = pd.Series(np.select([win, vix >= 30, vix >= 20], [4, 3, 2], default=1), index=vix.index).where(vix.notna())
+    f63 = BT.forward_returns(ndx, 63).reindex(vix.index)
+    f126 = BT.forward_returns(ndx, 126).reindex(vix.index)
+    df = pd.DataFrame({"lvl": lvl, "f63": f63, "f126": f126}).dropna(subset=["lvl", "f63"])
+
+    def stats(d: pd.DataFrame) -> dict:
+        return {"days": int(len(d)), "share": r(len(d) / len(df)), "mean_63": r(d.f63.mean()),
+                "median_63": r(d.f63.median()), "hit_63": r((d.f63 > 0).mean()), "p05_63": r(d.f63.quantile(0.05)),
+                "worst_63": r(d.f63.min()), "mean_126": r(d.f126.mean()),
+                "mean_63_pre2013": r(d[d.index < "2013-01-01"].f63.mean()),
+                "mean_63_post2013": r(d[d.index >= "2013-01-01"].f63.mean())}
+
+    levels = []
+    for k in (1, 2, 3, 4):
+        m = (lvl == k).reindex(df.index).fillna(False)
+        episodes = int((m & ~m.shift(1, fill_value=False)).sum())
+        levels.append({"level": k, "episodes": episodes, **stats(df[m])})
+    return {"start": df.index[0].date().isoformat(), "end": df.index[-1].date().isoformat(), "asset": "NDX",
+            "levels": levels, "all": stats(df)}
+
+
+def exit_rules(v: pd.DataFrame) -> dict:
+    """40 個出場／擇時規則的總結：通過幾個、看起來最好的、和「VIX ≥ 30 就出場」。alpha = 每年比固定比例多（少）多少。"""
+    tm = v[v.kind == "timing"].sort_values("alpha_full", ascending=False)
+
+    def row(x):
+        return {"variant": x.variant, "title": x.title, "alpha": r(x.alpha_full), "t": r(x.alpha_t, 2),
+                "alpha_oos": r(x.alpha_oos)}
+    vh = tm[tm.variant == "vix_high_riskoff"]
+    return {"n_tested": int(len(tm)), "n_passed": int((tm.verdict == "通過").sum()),
+            "best": row(tm.iloc[0]), "worst": row(tm.iloc[-1]),
+            "vix_high_riskoff": row(vh.iloc[0]) if len(vh) else None}
+
+
 def main():
     B = Bundle()
     e = pd.read_csv(R / "entry_results.csv")
@@ -94,6 +139,7 @@ def main():
         "vix30": entry_summary(e, v, "vix_level[rule=vix>=30]"),
         "cor3m95": entry_summary(e, v, "cor_high[pct=95]"),
         "sector_lows4": {"events": event_rows(edge(n_low >= 4, n_low), B, start="1999-12-01")},
+        "vix_levels": vix_levels(B),
         "reserve_ndx": [
             {"variant": row.variant, "ratio_minus_1": r(row.ratio - 1), "random_median_minus_1": r(row.null_median - 1),
              "avg_wait_days": r(row.avg_wait_days, 0)}
@@ -104,6 +150,8 @@ def main():
                           "bh_cagr": r(t10.loc["full", "bh_CAGR"]), "matched_cagr": r(t10.loc["full", "m_CAGR"]),
                           "maxdd": r(t10.loc["full", "s_MaxDD"]), "bh_maxdd": r(t10.loc["full", "bh_MaxDD"]),
                           "matched_maxdd": r(t10.loc["full", "m_MaxDD"]), "oos_alpha": r(t10.loc["OOS", "alpha_ann"])},
+        # 出場／擇時規則的總結（和同樣平均持股的固定比例相比，每年多或少多少）
+        "exit_rules": exit_rules(v),
         # 已驗證沒有用（或證據太弱）的指標：一句話原因。數字取自 results/verdicts.csv
         "rejected": [],
     }

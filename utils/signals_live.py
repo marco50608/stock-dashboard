@@ -63,6 +63,19 @@ SOURCE_NAMES = {"vix": "VIX", "cor3m": "COR3M", "sectors": "產業 ETF", "px": N
 MANUAL_RULE = (f"請自己查 VIX 收盤：最近 {HOLD_DAYS} 個交易日內如果有「收盤首次站上 40」（≥ 40 且前一天 < 40），"
                "就是加碼期間，照你的規則加到目標比例；沒有就不動。")
 
+VIX_CALM = 20.0           # 第 1 級和第 2 級的分界（只是描述用的門檻，研究沒有拿它當訊號）
+# 目前等級（第 8 頁最上方）。門檻要和 research/export_evidence.py 的 vix_levels() 一致。
+LEVELS = {
+    1: {"name": "平靜", "short": "平靜", "rule": "VIX < 20",
+        "action": "新錢照你原本的比例投入；現金桶不動"},
+    2: {"name": "正常波動", "short": "正常波動", "rule": "20 ≤ VIX < 30",
+        "action": "新錢照你原本的比例投入；現金桶不動"},
+    3: {"name": "緊張", "short": "緊張", "rule": "VIX ≥ 30（不在加碼期間）",
+        "action": "新錢照你原本的比例投入；現金桶先不動（還不是加碼條件）"},
+    4: {"name": "全面恐慌／加碼期間", "short": "加碼期間", "rule": "VIX 收盤首次站上 40 後 126 個交易日內",
+        "action": "新錢照常投入；現金桶可以依你的規則加碼到目標比例"},
+}
+
 # 第 8 頁「你的現金桶加碼規則」的參數：預設值與合法範圍（讀檔時超出範圍就截到範圍內）
 DEFAULT_ENTRY_PARAMS = {"stock_value": 400_000, "cash": 600_000, "base_equity_pct": 40, "tilt_pp": 10,
                         "cash_bucket": 200_000, "hold_months": 6, "holdings_date": None}
@@ -545,6 +558,113 @@ def state_headline(res: dict) -> str:
     return txt + _lag_note(res)
 
 
+def market_level(res: dict) -> dict:
+    """依目前的資料分級（1～4 級，數字越大，歷史上之後 3 個月的表現越好）。資料有問題時是 0 級（無法分級）。
+
+    第 4 級 = 全面恐慌當天或加碼期間；第 3 級 = VIX ≥ 30 但不在加碼期間（包括期間結束後 VIX 仍 ≥ 40）；
+    第 2 級 = 20 ≤ VIX < 30；第 1 級 = VIX < 20。只看 VIX，因為研究裡其他指標都沒有一致的證據。
+    """
+    state, v = res["state"], res["vix"].get("value")
+    if state in UNKNOWN_STATES or v is None:
+        return {"level": 0, "name": "無法分級", "rule": "VIX 抓不到或過期", "action": "先自己確認 VIX"}
+    k = 4 if state in ACTIVE_STATES else 3 if v >= VIX_WATCH else 2 if v >= VIX_CALM else 1
+    return {"level": k, **LEVELS[k]}
+
+
+def level_history(evidence: dict, level: int) -> dict | None:
+    """證據檔裡這個等級的歷史統計（之後 3 個月 NDX 的表現）；沒有就回傳 None。"""
+    for row in ((evidence or {}).get("vix_levels") or {}).get("levels", []):
+        if row.get("level") == level:
+            return row
+    return None
+
+
+def plain_summary(res: dict) -> dict:
+    """第 8 頁最上方的白話結論：目前是第幾級、照「你手冊寫的規則」該做什麼、歷史上這個等級之後的表現。
+    只是分級和檢查你自己訂的規則，不判斷你該不該買、買多少。回傳 {"level", "title", "body", "history"}。"""
+    state, vs = res["state"], res["vix"]
+    w = vs.get("window") or {}
+    v = vs.get("value")
+    lv = market_level(res)
+    no_sell = "不因為指標或反彈賣出"
+    if lv["level"] == 0:
+        title = "無法分級：資料有問題"
+        body = "請先看最上方的紅色提示，或自己查 VIX 收盤。新錢照你原本的計畫；現金桶要等確認 VIX 之後再決定。"
+    else:
+        title = f"第 {lv['level']} 級（共 4 級）：{lv['name']}"
+        if state == STATE_PANIC:
+            lead = f"今天 VIX 收盤首次站上 {VIX_PANIC:.0f}，達到你手冊寫的加碼條件。"
+            rule = f"可以從現金桶加碼到目標比例（金額看下方計算器），之後至少持有、{no_sell}；新錢照常投入。"
+        elif state == STATE_HOLD:
+            left = (f"至少還剩 {w['remaining_min']} 個交易日" if w.get("stale_lag")
+                    else f"還剩 {w['remaining']} 個交易日")
+            lead = (("今天 VIX 再次站上 40，加碼期間重新起算，這不是再買一次。" if w.get("retrigger_today") else "")
+                    + f"加碼期間中（觸發日 {w['trigger']}，{left}）。")
+            rule = f"已經加碼就維持、不要再加；還沒加碼可以照規則補上（金額看下方計算器）；新錢照常投入；{no_sell}。"
+        elif v >= VIX_PANIC:
+            lead = (f"VIX {_vix_txt(v)} 在 40 以上，但上一段加碼期間已經結束，不是新的加碼條件"
+                    f"（要先回到 {VIX_PANIC:.0f} 以下、再收盤站上 {VIX_PANIC:.0f}）。")
+            rule = f"新錢照你原本的比例投入；現金桶不動；{no_sell}。"
+        else:
+            lead = f"VIX {_vix_txt(v)}（{lv['rule']}）。"
+            rule = f"{lv['action']}；{no_sell}。"
+        body = lead + "照你手冊寫的規則：" + rule
+    if state not in ACTIVE_STATES and w.get("ended") and w.get("ended_ago", 10 ** 6) <= RECENT_END:
+        body += f"另外，加碼期間已在 {w['ended']} 結束：手冊的做法是把股票比例調回平常的比例。"
+    hist = level_history(res.get("evidence"), lv["level"]) if lv["level"] else None
+    allh = ((res.get("evidence") or {}).get("vix_levels") or {}).get("all")
+    history = None
+    if hist and allh:
+        history = (f"歷史上（1990 起）第 {lv['level']} 級之後 3 個月，NDX 平均 {_pct(hist['mean_63'])}、"
+                   f"{_pct(hist['hit_63'], 0, False)} 的時候是正報酬、最差的 5% 是 {_pct(hist['p05_63'], 0)}；"
+                   f"所有日子平均 {_pct(allh['mean_63'])}。")
+    return {"level": lv["level"], "title": title, "body": body + _lag_note(res), "history": history}
+
+
+def exit_summary(res: dict) -> dict:
+    """第 8 頁「出場參考」：研究裡 40 個出場規則沒有一個通過驗證，所以這裡不給出場訊號，
+    只整理三件事：照你手冊的規則該不該調回平常比例、10 個月均線（有代價的保險）在哪裡、不要用指標賣出。
+    標題的優先順序：資料有問題 > 加碼期間剛結束 > 加碼期間中 > 10 個月均線跌破 > 沒事。回傳 {"title", "items", "footer"}。"""
+    vs, tr = res["vix"], res.get("trend10m") or {}
+    w = vs.get("window") or {}
+    ev = res.get("evidence") or {}
+    t10, er = ev.get("trend_10m_ndx") or {}, ev.get("exit_rules") or {}
+    symbol = res.get("symbol", "QQQ")
+    items = []
+    recently_ended = bool(w.get("ended")) and w.get("ended_ago", 10 ** 6) <= RECENT_END
+    if res["state"] in UNKNOWN_STATES:
+        title = "資料有問題，先不做任何調整"
+        items.append("加碼期間：VIX 抓不到或過期，無法確認，先看最上方的提示。")
+    elif w.get("active"):
+        title = "加碼期間中：先不調回"
+        items.append(f"加碼期間約到 {w['end_est']} 結束（期間內 VIX 再站上 40 會延後）；結束後照手冊把股票比例調回平常。"
+                     "期間內不要因為反彈賣出。")
+    elif recently_ended:
+        title = "加碼期間已結束：照手冊調回平常比例"
+        items.append(f"加碼期間在 {w['ended']} 結束。這是你手冊裡唯一照規則的減碼：把股票比例調回平常的比例，"
+                     "不是在預測行情。")
+    else:
+        title = "沒有要照規則減碼的部位"
+        items.append("目前不在加碼期間，也沒有剛結束的加碼期間，所以沒有要調回的部位。")
+    if tr.get("above") is not None:
+        if tr["above"] is False and title == "沒有要照規則減碼的部位":
+            title = "10 個月均線跌破：只有你選它當保險才出場"
+        cost = ""
+        if t10:
+            cost = (f"歷史上（NDX {str(t10.get('start', ''))[:4]} 起）用它出場年化 {_pct(t10.get('cagr'), 1, False)}，"
+                    f"一直持有 {_pct(t10.get('bh_cagr'), 1, False)}；最大回撤 {_pct(t10.get('maxdd'), 0)}，"
+                    f"一直持有 {_pct(t10.get('bh_maxdd'), 0)}。")
+        items.append(f"10 個月均線（{tr['month']} 月底）：{symbol} {'在均線之上' if tr['above'] else '跌破均線'}"
+                     f"（{_pct(tr['gap'])}）。這是有代價的保險，不是訊號：{cost}"
+                     "只有你事先決定要用它，才在月底收盤跌破時出場、站回時買回。")
+    if er:
+        vh = er.get("vix_high_riskoff") or {}
+        items.append(f"研究測了 {er.get('n_tested')} 個出場規則，通過 {er.get('n_passed')} 個。不要因為情緒、籌碼、總經指標賣出"
+                     + (f"；「VIX ≥ 30 就出場」每年比固定比例少 {_pct(abs(vh['alpha']), 1, False)}，是最差的之一。"
+                        if vh.get("alpha") is not None else "。"))
+    return {"title": title, "items": items, "footer": "這是研究結果和你自己規則的整理，不是賣出建議。"}
+
+
 def format_brief(res: dict, symbol: str = "QQQ") -> str:
     """純文字簡報（給排程、通知或複製）。警告和資料過期放在最上面。"""
     vs, ss, cs, ds, tr = res["vix"], res["sectors"], res["cor3m"], res["drawdown"], res["trend10m"]
@@ -564,6 +684,9 @@ def format_brief(res: dict, symbol: str = "QQQ") -> str:
     for x in res.get("notes", []):
         lines.append(f"註：{x}")
     lines.append("")
+    lv = market_level(res)
+    lv_txt = "無法分級" if lv["level"] == 0 else f"第 {lv['level']} 級（共 4 級）：{lv['name']}"
+    lines.append(f"目前等級：{lv_txt}")
     if state not in UNKNOWN_STATES:
         lines.append(f"狀態：{state}（{state_headline(res)}）")
     sec = ("—" if ss.get("count") is None else f"{ss['count']}/{ss.get('of')} 檔"

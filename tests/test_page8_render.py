@@ -67,6 +67,14 @@ def card(at) -> str:
     return " ".join(m.value for m in at.markdown if "恐慌觀察燈" in m.value)
 
 
+def level_card(at) -> str:
+    return " ".join(m.value for m in at.markdown if "目前等級（依今天的資料）" in m.value)
+
+
+def exit_card(at) -> str:
+    return " ".join(m.value for m in at.markdown if "出場參考（研究裡沒有任何出場訊號通過驗證）" in m.value)
+
+
 def order(at) -> list[tuple[str, str]]:
     """頁面元素的先後順序（類型、文字）。有些輸入元件讀 value 會丟例外，當成空字串。"""
     def _val(e):
@@ -101,7 +109,22 @@ if __name__ == "__main__":
     at = run()
     check("沒有例外", len(at.exception) == 0)
     md = " ".join(m.value for m in at.markdown)
-    check("顯示「正常」與新錢直接買", "⚪ 正常" in card(at) and "照計畫直接買" in md)
+    raw0 = raw_data("2026-10-20")
+    exp = 1 if raw0["vix"].iloc[-1] < 20 else 2
+    check("顯示「正常」，最上方是目前等級和新錢照原本比例投入",
+          "⚪ 正常" in card(at) and f"第 {exp} 級（共 4 級）" in level_card(at)
+          and "新錢照你原本的比例投入" in level_card(at))
+    check("最上方說明：分成 4 個等級、要不要買由你決定、不是投資建議",
+          any("分成 4 個等級" in i.value and "最後由你決定" in i.value and "不是投資建議" in i.value for i in at.info))
+    check("等級卡寫出這個等級歷史上之後 3 個月的表現", f"歷史上（1990 起）第 {exp} 級之後 3 個月" in level_card(at))
+    check("右上有出場參考卡：寫明 40 個出場規則通過 0 個、不是賣出建議",
+          "研究測了 40 個出場規則，通過 0 個" in exit_card(at) and "不是賣出建議" in exit_card(at)
+          and "10 個月均線" in exit_card(at))
+    check("恐慌觀察燈的細節移到兩張卡下面", "⚪ 正常" in card(at)
+          and first(at, lambda x: "出場參考" in x[1]) < first(at, lambda x: "恐慌觀察燈" in x[1]))
+    tbl = [d for d in at.dataframe if "等級" in d.value.columns]
+    check("有四個等級的表，標出現在是哪一級", bool(tbl) and len(tbl[0].value) == 5
+          and tbl[0].value.loc[tbl[0].value[""] == "▶ 現在", "等級"].tolist() == [f"{exp} {L.LEVELS[exp]['name']}"])
     check("現金桶不動", any("目前不是加碼期間：現金桶不動" in i.value for i in at.info))
     check("各來源資料日直接顯示在頁面上（不是只在滑鼠提示）",
           any("VIX 2026-10-20" in c.value and "QQQ 2026-10-20" in c.value for c in at.caption))
@@ -122,6 +145,8 @@ if __name__ == "__main__":
     install(panic_raw(0))
     at = run(tmp_page(local=False))
     check("觸發當天：燈號全面恐慌", "🟢 全面恐慌" in card(at) and "今天收盤首次站上 40" in card(at))
+    check("觸發當天：第 4 級，寫出達到加碼條件", "第 4 級（共 4 級）" in level_card(at) and "達到你手冊寫的加碼條件" in level_card(at))
+    check("觸發當天：出場參考寫「加碼期間中：先不調回」", "加碼期間中：先不調回" in exit_card(at))
     check("觸發當天：算出加碼金額", any("從現金桶買進" in s.value for s in at.success))
     install(panic_raw(3, vix_after=35.0))
     at = run(tmp_page(local=False))
@@ -129,7 +154,8 @@ if __name__ == "__main__":
           "🟢 加碼期間" in card(at) and "觸發日" in card(at) and "還剩 122 個交易日" in card(at))
     check("加碼期間的說明：期間內再站上 40 不是再買一次", "不是再買一次" in card(at))
     check("加碼期間的計算器仍然是加碼（不是「現金桶不動」）",
-          any(s.value.startswith("加碼期間") for s in at.success) and not at.info)
+          any(s.value.startswith("加碼期間") for s in at.success) and not any("現金桶不動" in i.value for i in at.info))
+    check("加碼期間 → 第 4 級", "第 4 級（共 4 級）" in level_card(at))
 
     print("Bug 4：計算器依目前市值算實際比例")
     install(panic_raw(0))
@@ -153,7 +179,8 @@ if __name__ == "__main__":
     check("最上方紅色提示：請自己查 VIX 收盤（首次站上 40、126 個交易日的加碼期間）",
           any("請自己查 VIX 收盤" in e.value and "收盤首次站上 40" in e.value and "126 個交易日" in e.value
               for e in at.error))
-    check("計算器沒有寫「目前不是加碼期間：現金桶不動」", not at.info)
+    check("計算器沒有寫「目前不是加碼期間：現金桶不動」", not any("現金桶不動" in i.value for i in at.info))
+    check("抓不到 VIX → 無法分級", "無法分級" in level_card(at))
     i_err = first(at, lambda x: x[0] == "Error")
     i_warn = first(at, lambda x: x[0] == "Warning" and "VIX 抓不到" in x[1])
     i_card = first(at, lambda x: "恐慌觀察燈" in x[1])
