@@ -1,0 +1,2 @@
+data_date,logged_at_utc,symbol,state,level,vix,vix_to_panic,vix_via,window_trigger,window_since,window_remaining,sectors_at_low,sectors_of,cor3m,cor3m_pct,confirmations,close,from_high,trend10m_above,last_panic,expected_session,stale_sources,evidence_generated,warnings
+2026-10-23,2026-10-26T15:50:08Z,QQQ,正常,1,19.45,20.55,CBOE,,,,0,9,15.0,71.4,,704.4,-0.0727,True,2025-04-04,2026-10-23,,2026-10-24,
