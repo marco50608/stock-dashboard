@@ -506,7 +506,8 @@ def test_levels():
 def test_exit_summary():
     ev = L.load_evidence()
     er = ev.get("exit_rules") or {}
-    check("證據檔有出場規則的總結：測了 40 個、通過 0 個", er.get("n_tested") == 40 and er.get("n_passed") == 0
+    check("證據檔有出場規則的總結：測過的擇時規則全部算進來、通過 0 個",
+          er.get("n_tested") == ev.get("n_timing_variants") and er.get("n_tested", 0) >= 45 and er.get("n_passed") == 0
           and (er.get("vix_high_riskoff") or {}).get("alpha", 0) < 0)
     days = pd.bdate_range("2023-01-02", "2026-10-20")
     up = pd.Series(np.linspace(100, 200, len(days)), index=days)
@@ -521,8 +522,8 @@ def test_exit_summary():
     e = ex(calm, up)
     txt = " ".join(e["items"])
     check("平常、在 10 個月均線之上 → 沒有要照規則減碼的部位", e["title"] == "沒有要照規則減碼的部位")
-    check("出場參考寫出均線位置、它的歷史代價、40 個規則通過 0 個、VIX ≥ 30 就出場最差",
-          "在均線之上" in txt and "一直持有" in txt and "研究測了 40 個出場規則，通過 0 個" in txt
+    check("出場參考寫出均線位置、它的歷史代價、出場規則通過 0 個、VIX ≥ 30 就出場最差",
+          "在均線之上" in txt and "一直持有" in txt and f"研究測了 {er.get('n_tested')} 個出場規則，通過 0 個" in txt
           and "「VIX ≥ 30 就出場」每年比固定比例少 4.8%" in txt)
     check("跌破 10 個月均線 → 標題說只有選它當保險才出場",
           ex(calm, down)["title"] == "10 個月均線跌破：只有你選它當保險才出場")
@@ -538,6 +539,88 @@ def test_exit_summary():
     check("抓不到 VIX → 資料有問題，先不做任何調整", L.exit_summary(r)["title"] == "資料有問題，先不做任何調整")
     r = L.capitulation_state(calm)
     check("沒有證據檔、沒有價格也不會壞", L.exit_summary(r)["title"] == "沒有要照規則減碼的部位")
+
+
+# ---------------------------------------------------------------------------
+# VIX 盤中參考（第 8 頁）
+# ---------------------------------------------------------------------------
+def test_intraday():
+    check("交易日 11:00（紐約）VIX 在計算", L.vix_market_open(ny(2026, 11, 6, 11, 0)))
+    check("交易日 04:00（盤前時段）也在計算", L.vix_market_open(ny(2026, 11, 6, 4, 0)))
+    check("16:15 收盤後、週六、感恩節都不在計算",
+          not L.vix_market_open(ny(2026, 11, 6, 17, 0)) and not L.vix_market_open(ny(2026, 11, 7, 11, 0))
+          and not L.vix_market_open(ny(2026, 11, 26, 11, 0)))
+
+    idx = pd.bdate_range(end="2026-11-05", periods=400)
+
+    def res_for(closes):
+        r = L.capitulation_state(closes)
+        r["series"] = {"vix": closes}
+        return r
+
+    calm = pd.Series(30.0, index=idx)
+    calm.iloc[-1] = 38.0
+    r = res_for(calm)
+    iv = L.intraday_view(r, {"price": 41.0, "time": ny(2026, 11, 6, 11, 0), "source": "CBOE"})
+    check("盤中 41（昨收 38）→ 盤中、比昨收 +3、如果收在這裡會觸發全面恐慌",
+          iv["phase"] == "盤中" and abs(iv["change"] - 3) < 1e-9 and iv["would_trigger"] and iv["level"] == 4
+          and "站上 40" in iv["message"] and "台灣時間" in iv["message"])
+    iv = L.intraday_view(r, {"price": 35.0, "time": ny(2026, 11, 6, 11, 0), "source": "CBOE"})
+    check("盤中 35 → 如果收在這裡是第 3 級，不會觸發",
+          not iv["would_trigger"] and iv["level"] == 3 and "如果今天就收在這裡：第 3 級" in iv["message"])
+    iv = L.intraday_view(r, {"price": 33.0, "time": ny(2026, 11, 6, 5, 0), "source": "CBOE"})
+    check("05:00 的報價標成盤前", iv["phase"] == "盤前")
+    iv = L.intraday_view(r, {"price": 41.0, "time": ny(2026, 11, 6, 16, 15), "source": "CBOE"})
+    check("今天 16:15 的收盤報價、官方檔還沒更新 → 標出來，而且照樣判斷會不會觸發",
+          iv["phase"].startswith("今天收盤") and iv["would_trigger"])
+    iv = L.intraday_view(r, {"price": 38.0, "time": ny(2026, 11, 5, 16, 15), "source": "CBOE"})
+    check("報價就是最後一個收盤（週末）→ 顯示收盤，和再前一個收盤比", iv["phase"] == "收盤" and not iv["projection"]
+          and iv["base"] == 30.0 and abs(iv["change"] - 8) < 1e-9 and "沒有盤中交易" in iv["message"])
+    iv = L.intraday_view(r, None)
+    check("抓不到報價 → 不顯示比較，告訴你最新的收盤", not iv["available"] and "2026-11-05 收盤" in iv["message"])
+
+    hold = pd.Series(30.0, index=idx)
+    hold.iloc[-5] = 45.0
+    hold.iloc[-4:] = 35.0
+    iv = L.intraday_view(res_for(hold), {"price": 42.0, "time": ny(2026, 11, 6, 11, 0), "source": "CBOE"})
+    check("已經在加碼期間 → 盤中再站上 40 不是新的觸發，說做法不變",
+          not iv["would_trigger"] and iv["would_retrigger"] and "已經在加碼期間" in iv["message"])
+
+    import requests
+
+    class Resp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"data": {"current_price": 27.5, "last_trade_time": "2026-11-06T11:02:00"}}
+
+    orig_get = requests.get
+    try:
+        requests.get = lambda *a, **k: Resp()
+        q = L.fetch_vix_quote()
+        check("CBOE 報價：價格和紐約時間", q["source"] == "CBOE" and q["price"] == 27.5
+              and q["time"] == ny(2026, 11, 6, 11, 2))
+
+        def boom(*a, **k):
+            raise requests.ConnectionError("down")
+        requests.get = boom
+        import yfinance as yf
+        orig_dl = yf.download
+        bars = pd.DataFrame({("Close", "^VIX"): [26.0, 26.4]},
+                            index=pd.DatetimeIndex(["2026-11-06 15:00", "2026-11-06 15:01"], tz="UTC"))
+        bars.columns = pd.MultiIndex.from_tuples(bars.columns)
+        try:
+            yf.download = lambda *a, **k: bars
+            q = L.fetch_vix_quote()
+            check("CBOE 失敗 → 改用 Yahoo 的最後一分鐘（換成紐約時間）", q["source"] == "Yahoo" and q["price"] == 26.4
+                  and q["time"] == ny(2026, 11, 6, 10, 1))
+            yf.download = lambda *a, **k: pd.DataFrame()
+            check("兩邊都失敗 → None", L.fetch_vix_quote() is None)
+        finally:
+            yf.download = orig_dl
+    finally:
+        requests.get = orig_get
 
 
 # ---------------------------------------------------------------------------
@@ -588,7 +671,7 @@ def test_log_signals():
 if __name__ == "__main__":
     for f in [test_calendar, test_bug1_missing_vix, test_bug2_stale, test_bug3_window, test_bug4_calculator,
               test_bug5_closed_bars, test_minor_sectors_and_params, test_round2, test_levels, test_exit_summary,
-              test_log_signals]:
+              test_intraday, test_log_signals]:
         print(f.__name__)
         f()
     print("\n全部通過" if not FAILS else f"\n失敗：{FAILS}")

@@ -1,7 +1,7 @@
 """
 進出場訊號（依 research/REPORT.md 的結論，2026-10）。
 
-研究結論（106 個變體、嚴格驗證）：
+研究結論（114 個變體、嚴格驗證；2026-10-25 追加 8 個）：
   - 沒有任何訊號通過驗證。最一致的是「全面恐慌」：VIX 收盤首次 ≥ 40 之後 3 個月通常比平常好，
     但只是觀察名單（多重檢定後不顯著）。
   - 最確定的是：每月存的錢不要留著等訊號，直接照計畫買。
@@ -48,6 +48,10 @@ MAX_LAG_SESSIONS = 2       # 資料日落後最近一個已收盤交易日超過
 RECENT_END = 21            # 加碼期間結束後 21 個交易日內，提醒把股票比例調回平常
 
 NY = ZoneInfo("America/New_York")
+TPE = ZoneInfo("Asia/Taipei")
+VIX_GTH_START = time(3, 15)   # VIX 每個交易日紐約 3:15 開始計算（盤前），9:30 起是正常交易時段，16:15 收盤
+VIX_RTH_START = time(9, 30)
+VIX_CLOSE = time(16, 15)
 CLOSE_CUTOFF = time(16, 30)   # 美股 16:00、VIX 16:15 收盤；紐約時間 16:30 以後才把當天的日線當成已收盤
 
 STATE_NORMAL, STATE_WATCH, STATE_PANIC = "正常", "留意", "全面恐慌"
@@ -622,7 +626,7 @@ def plain_summary(res: dict) -> dict:
 
 
 def exit_summary(res: dict) -> dict:
-    """第 8 頁「出場參考」：研究裡 40 個出場規則沒有一個通過驗證，所以這裡不給出場訊號，
+    """第 8 頁「出場參考」：研究裡的出場規則（2026-10：45 個）沒有一個通過驗證，所以這裡不給出場訊號，
     只整理三件事：照你手冊的規則該不該調回平常比例、10 個月均線（有代價的保險）在哪裡、不要用指標賣出。
     標題的優先順序：資料有問題 > 加碼期間剛結束 > 加碼期間中 > 10 個月均線跌破 > 沒事。回傳 {"title", "items", "footer"}。"""
     vs, tr = res["vix"], res.get("trend10m") or {}
@@ -663,6 +667,77 @@ def exit_summary(res: dict) -> dict:
                      + (f"；「VIX ≥ 30 就出場」每年比固定比例少 {_pct(abs(vh['alpha']), 1, False)}，是最差的之一。"
                         if vh.get("alpha") is not None else "。"))
     return {"title": title, "items": items, "footer": "這是研究結果和你自己規則的整理，不是賣出建議。"}
+
+
+def vix_market_open(now: datetime | None = None) -> bool:
+    """紐約時間現在 VIX 有沒有在計算（交易日 3:15～16:15）。"""
+    n = (now or _now()).astimezone(NY)
+    return is_session(n.date()) and VIX_GTH_START <= n.time() < VIX_CLOSE
+
+
+def intraday_view(res: dict, quote: dict | None, now: datetime | None = None) -> dict:
+    """盤中參考：最新的 VIX 報價和前一個收盤比，並算出「如果今天就收在這裡」會是第幾級、會不會觸發。
+
+    正式的燈號和等級仍然只看收盤（研究的規則是收盤價，盤中衝上 40 收盤可能又回到 40 以下）。
+    quote：fetch_vix_quote() 的結果 {price, time（有時區）, source}；None = 抓不到。
+    「如果今天收在這裡」：把報價當成今天的收盤接在已收盤的序列後面，用同一個 panic_window 規則算。
+    """
+    closes = (res.get("series") or {}).get("vix")
+    closes = pd.Series(closes).dropna() if closes is not None else pd.Series(dtype=float)
+    if closes.empty:
+        return {"available": False, "message": "抓不到 VIX 的收盤，沒辦法比較。"}
+    last_close, last_date = float(closes.iloc[-1]), closes.index[-1].date()
+    if not quote or quote.get("price") is None or quote.get("time") is None:
+        return {"available": False, "last_close": last_close, "last_date": last_date.isoformat(),
+                "message": f"盤中報價抓不到；最新的是 {last_date} 收盤 {_vix_txt(last_close)}。"}
+    qt = quote["time"].astimezone(NY)
+    qd = qt.date()
+    cur = market_level(res)
+    out = {"available": True, "source": quote.get("source", ""), "projection": False}
+    if qd > last_date and is_session(qd):
+        price = float(quote["price"])
+        if qt.time() >= VIX_CLOSE:
+            phase = "今天收盤（官方收盤檔還沒更新）"
+        elif qt.time() < VIX_RTH_START:
+            phase = "盤前"
+        else:
+            phase = "盤中"
+        base, base_date = last_close, last_date
+        hypo = pd.concat([closes, pd.Series([price], index=[pd.Timestamp(qd)])])
+        w = panic_window(hypo)
+        level = 4 if w.get("active") else 3 if price >= VIX_WATCH else 2 if price >= VIX_CALM else 1
+        out.update(projection=True, would_trigger=bool(w.get("today") and not w.get("retrigger_today")),
+                   would_retrigger=bool(w.get("retrigger_today")), proj_level=level)
+    else:
+        # 沒有比最後一個收盤更新的報價：最新的就是官方收盤，和再前一個收盤比
+        phase = "收盤"
+        price, qt = last_close, None
+        base = float(closes.iloc[-2]) if len(closes) > 1 else None
+        base_date = closes.index[-2].date() if len(closes) > 1 else None
+        level = cur["level"]
+    change = price - base if base else None
+    close_ny = datetime.combine(qd if out["projection"] else last_date, VIX_CLOSE, tzinfo=NY)
+    out.update(phase=phase, price=price, base=base, base_date=base_date.isoformat() if base_date else None,
+               change=change, change_pct=(change / base) if change is not None and base else None,
+               time_txt=(f"紐約 {qt:%m-%d %H:%M}（台灣 {qt.astimezone(TPE):%m-%d %H:%M}）" if qt is not None
+                         else f"{last_date}"),
+               close_tpe=f"{close_ny.astimezone(TPE):%m-%d %H:%M}")
+    lv_name = LEVELS[level]["name"]
+    if not out["projection"]:
+        msg = f"現在沒有盤中交易，最新的是 {last_date} 收盤。下一個交易日開盤後這裡會顯示盤中的數字。"
+    elif res["state"] in ACTIVE_STATES:
+        msg = "已經在加碼期間（第 4 級），盤中的數字不改變做法。"
+    elif out["would_trigger"]:
+        msg = (f"盤中 VIX {_vix_txt(price)} 已經站上 {VIX_PANIC:.0f}。如果今天收盤還在 {VIX_PANIC:.0f} 以上，"
+               f"就是全面恐慌（第 4 級）：照你的規則加碼。正式判斷以收盤為準："
+               f"紐約 16:15，台灣時間 {out['close_tpe']}。")
+    elif out["would_retrigger"]:
+        msg = f"如果今天收盤還在 {VIX_PANIC:.0f} 以上，加碼期間會重新起算（不是再買一次）。"
+    else:
+        same = "，和目前一樣" if level == cur["level"] else f"（目前是第 {cur['level']} 級）"
+        msg = f"如果今天就收在這裡：第 {level} 級（{lv_name}）{same}。"
+    out.update(level=level, level_name=lv_name, message=msg)
+    return out
 
 
 def format_brief(res: dict, symbol: str = "QQQ") -> str:
@@ -777,6 +852,37 @@ def fetch_yahoo_vix(period: str = "10y") -> pd.Series:
     if s.empty:
         raise ValueError("Yahoo ^VIX 沒有可用的收盤價")
     return s
+
+
+CBOE_QUOTE_URL = "https://cdn.cboe.com/api/global/delayed_quotes/quotes/_VIX.json"
+
+
+def fetch_vix_quote(timeout: int = 10) -> dict | None:
+    """最新的 VIX 報價：CBOE 官方的延遲報價（約延遲 15 分鐘），失敗時改用 Yahoo（也延遲約 15 分鐘）。
+    免費的資料都有延遲，沒有真正即時的。回傳 {price, time（紐約時間）, source}；兩邊都失敗時回傳 None。"""
+    import requests
+    try:
+        r = requests.get(CBOE_QUOTE_URL, headers=_UA, timeout=timeout)
+        r.raise_for_status()
+        q = r.json()["data"]
+        price = float(q["current_price"])
+        t = datetime.fromisoformat(str(q["last_trade_time"])).replace(tzinfo=NY)
+        if price > 0:
+            return {"price": price, "time": t, "source": "CBOE"}
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        import yfinance as yf
+        m = yf.download("^VIX", period="5d", interval="1m", auto_adjust=False, progress=False, threads=False)
+        c = (m["Close"]["^VIX"] if isinstance(m.columns, pd.MultiIndex) else m["Close"]).dropna()
+        c = c[c > 0]
+        if len(c):
+            t = pd.Timestamp(c.index[-1])
+            t = (t.tz_localize("UTC") if t.tzinfo is None else t).tz_convert(NY).to_pydatetime()
+            return {"price": float(c.iloc[-1]), "time": t, "source": "Yahoo"}
+    except Exception:  # noqa: BLE001
+        pass
+    return None
 
 
 def gather_live(symbol: str = "QQQ") -> tuple[dict, list[str]]:

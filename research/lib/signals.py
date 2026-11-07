@@ -841,3 +841,80 @@ def all_variants(kind: str | None = None):
             continue
         for params in spec.variants:
             yield spec, params, variant_name(spec, params)
+
+
+# ===========================================================================
+# 第三輪（2026-10-25，使用者要求；規則見 research/PREREG_batch3_2026-10-25.md，跑之前就固定）
+# 「貨幣信用緊縮」：SLOOS、相對短期利率、EBP；「政策不確定性」：EPU。全部算進多重檢定。
+# ===========================================================================
+def _sloos_tight(B) -> pd.Series:
+    """最新公布的 SLOOS ≥ 20，而且 ≥ 前一次公布值。"""
+    s = B.sloos()
+    return ((s["value"] >= 20) & (s["value"] >= s["prev"])).where(s["value"].notna() & s["prev"].notna())
+
+
+def _tbill_rel(B) -> pd.Series:
+    """3 個月國庫券利率 − 過去 252 個交易日的平均（百分點）。"""
+    t = B.fred("DTB3", 1)
+    return t - t.rolling(252, min_periods=200).mean()
+
+
+def _ebp_rise(B) -> pd.Series:
+    e = B.ebp()
+    return (e["chg3"] >= 0.30).where(e["chg3"].notna())
+
+
+@register("epu_spike", "entry", {"pct": [90, 95]},
+          "政策不確定性（EPU）30 日平均剛站上 10 年 X 百分位", "總經",
+          ref="Brogaard & Detzel 2015（Management Science）", pub_year=2015, niche="半冷門", batch=3)
+def epu_spike(B, asset, pct):
+    e = B.epu30()
+    p = rpct(e, 2520, 1260)
+    return edge(p >= pct, p)
+
+
+@register("ebp_peak", "entry", {},
+          "超額債券溢酬（EBP）≥ 1.0 且比 6 個月高點低 0.25 以上（信用壓力見頂回落）", "信用",
+          ref="Gilchrist & Zakrajšek 2012（AER）", pub_year=2012, niche="冷門", batch=3)
+def ebp_peak(B, asset):
+    e = B.ebp()
+    cond = (e["ebp"] >= 1.0) & (e["ebp"] <= e["max6"] - 0.25)
+    return edge(cond.where(e["max6"].notna()), e["max6"])
+
+
+@register("sloos_tight", "timing", {},
+          "銀行收緊放款標準（SLOOS ≥ 20 且上升）時出場", "信用",
+          ref="Chava, Gallmeyer & Park 2015（JME）", pub_year=2015, niche="冷門", batch=3)
+def sloos_tight(B, asset):
+    c = _sloos_tight(B)
+    return (1.0 - c.astype(float)).where(c.notna())
+
+
+@register("tbill_shock", "timing", {"th": [0.5, 1.0]},
+          "3 個月國庫券比一年平均高 th 個百分點以上時出場（相對短期利率）", "總經",
+          ref="Ang & Bekaert 2007（RFS）", pub_year=2007, niche="半冷門", batch=3)
+def tbill_shock(B, asset, th):
+    r = _tbill_rel(B)
+    return (r < th).astype(float).where(r.notna())
+
+
+@register("ebp_rise", "timing", {},
+          "超額債券溢酬（EBP）3 個月上升 ≥ 0.30 個百分點時出場", "信用",
+          ref="Gilchrist & Zakrajšek 2012（AER）", pub_year=2012, niche="冷門", batch=3)
+def ebp_rise(B, asset):
+    c = _ebp_rise(B)
+    return (1.0 - c.astype(float)).where(c.notna())
+
+
+@register("tightening_2of3", "timing", {},
+          "貨幣信用緊縮三個條件（SLOOS、短期利率 1.0、EBP）至少兩個成立時出場", "總經",
+          ref="組合（事先登記）", niche="冷門", batch=3)
+def tightening_2of3(B, asset):
+    a = _sloos_tight(B)
+    r = _tbill_rel(B)
+    b = (r >= 1.0).where(r.notna())
+    c = _ebp_rise(B)
+    df = pd.concat([a, b, c], axis=1)
+    n = df.fillna(False).astype(float).sum(axis=1)
+    return (n < 2).astype(float).where(df.notna().all(axis=1))
+

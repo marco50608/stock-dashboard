@@ -147,10 +147,12 @@ FRED_SERIES = [
     "USREC", "USRECD",
     # 初領失業金目前版本（只用在 2009 年以前沒有 ALFRED vintage 的部分）
     "ICSA", "UMCSENT",
+    # 第三輪（2026-10-25，見 PREREG_batch3_2026-10-25.md）：銀行放款標準、政策不確定性
+    "DRTSCILM", "USEPUINDXD",
 ]
 # 會被修正的總經資料：用 ALFRED 取「第一次公布的數字」和公布日
 ALFRED_FIRST_RELEASE = ["ICSA", "CCSA", "PAYEMS", "UNRATE", "CPIAUCSL", "INDPRO", "RSAFS",
-                        "PERMIT", "HOUST", "UMCSENT", "NFCI"]
+                        "PERMIT", "HOUST", "UMCSENT", "NFCI", "DRTSCILM"]
 
 
 def _fred_key() -> str:
@@ -165,12 +167,12 @@ def _fred_key() -> str:
     return k
 
 
-def fetch_fred() -> None:
+def fetch_fred(only: list[str] | None = None) -> None:
     key = _fred_key()
     d = RAW / "fred"
     d.mkdir(exist_ok=True)
     url = "https://api.stlouisfed.org/fred/series/observations"
-    for sid in FRED_SERIES:
+    for sid in only or FRED_SERIES:
         try:
             r = requests.get(url, params={"series_id": sid, "api_key": key, "file_type": "json",
                                           "observation_start": "1900-01-01"}, timeout=60)
@@ -187,13 +189,13 @@ def fetch_fred() -> None:
         time.sleep(0.3)
 
 
-def fetch_alfred() -> None:
+def fetch_alfred(only: list[str] | None = None) -> None:
     """每個觀測值第一次公布時的數字與公布日（output_type=4 = initial release only）。"""
     key = _fred_key()
     d = RAW / "alfred"
     d.mkdir(exist_ok=True)
     url = "https://api.stlouisfed.org/fred/series/observations"
-    for sid in ALFRED_FIRST_RELEASE:
+    for sid in only or ALFRED_FIRST_RELEASE:
         try:
             r = requests.get(url, params={"series_id": sid, "api_key": key, "file_type": "json",
                                           "output_type": 4, "realtime_start": "1776-07-04",
@@ -358,12 +360,36 @@ def fetch_fomc() -> None:
     _log(f"  FOMC: {len(df)} 例行會議 {df['date'].min()} -> {df['date'].max()}")
 
 
+# ---------------------------------------------------------------------------
+# 第三輪：Gilchrist-Zakrajšek 超額債券溢酬（Fed 官網，月資料，每次更新會重新估計整段歷史）
+# ---------------------------------------------------------------------------
+EBP_URL = "https://www.federalreserve.gov/econres/notes/feds-notes/ebp_csv.csv"
+
+
+def fetch_ebp() -> None:
+    d = RAW / "fed"
+    d.mkdir(exist_ok=True)
+    r = requests.get(EBP_URL, headers={"User-Agent": "Mozilla/5.0"}, timeout=60)
+    r.raise_for_status()
+    df = pd.read_csv(io.StringIO(r.text))
+    df.columns = [c.strip().lower() for c in df.columns]
+    if not {"date", "ebp"} <= set(df.columns):
+        raise RuntimeError(f"EBP 檔案格式變了：{list(df.columns)}")
+    df.to_csv(d / "ebp.csv", index=False)
+    _log(f"  EBP: {len(df)} months {df['date'].iloc[0]} -> {df['date'].iloc[-1]}")
+
+
 SECTIONS = {"fomc": fetch_fomc, "prices": fetch_prices, "cboe": fetch_cboe, "repo": fetch_repo_cache, "fred": fetch_fred,
-            "alfred": fetch_alfred, "cot": fetch_cot, "french": fetch_french, "insider": fetch_insider}
+            "alfred": fetch_alfred, "cot": fetch_cot, "french": fetch_french, "insider": fetch_insider, "ebp": fetch_ebp}
 
 if __name__ == "__main__":
+    # 用法：fetch_data.py [段落 ...]；fred、alfred 可以只抓幾個序列，例如 fred:DRTSCILM,USEPUINDXD
     (RAW / "prices").mkdir(exist_ok=True)
     which = sys.argv[1:] or list(SECTIONS)
     for w in which:
+        name, _, ids = w.partition(":")
         _log(f"== {w}")
-        SECTIONS[w]()
+        if ids:
+            SECTIONS[name](ids.split(","))
+        else:
+            SECTIONS[name]()

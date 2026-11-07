@@ -166,6 +166,8 @@ def main():
         ("fed_put", "Fed put（FOMC 前大跌）", "反向：之後 3 個月比平常差"),
         ("dd_tranche[level=0.1]", "距高點跌 10%（舊手冊的分批）", "只對 NDX 有效，換到 S&P 500 任何年代都沒效果"),
         ("breadth_thrust[low=0.2,high=0.5]", "產業廣度急速回升", "1926–1959 反向，即時版本弱"),
+        ("epu_spike[pct=95]", "政策不確定性（EPU）飆高（2026-10 追加）",
+         "方向是正的，但多重檢定後不顯著，而且大多和 VIX ≥ 40 是同一批危機"),
     ]
     ve = v.set_index("variant")
     f = e[(e.asset == "NDX") & (e.window == "full")].set_index("variant")

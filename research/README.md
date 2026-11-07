@@ -21,4 +21,4 @@ PYTHONUTF8=1 .venv/Scripts/python research/tests/run_signal_checks.py
 PYTHONUTF8=1 .venv/Scripts/python research/run_study.py
 ```
 
-完整步驟見 REPORT.md 第 8 節。新增訊號請加在 `lib/signals.py`（用 `@register`，參數在跑之前寫死），它會自動算進多重檢定。
+完整步驟見 REPORT.md 第 8 節。2026-10-25 的第三輪追加測試（SLOOS、短期利率、EBP、EPU）事先登記在 [PREREG_batch3_2026-10-25.md](PREREG_batch3_2026-10-25.md)，結果在 REPORT.md 第 9 節；敏感度檢查是 `run_batch3_sensitivity.py`。新增訊號請加在 `lib/signals.py`（用 `@register`，參數在跑之前寫死），它會自動算進多重檢定。

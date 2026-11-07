@@ -1,11 +1,11 @@
 {
- "generated": "2026-10-24",
+ "generated": "2026-10-25",
  "data_end": "2026-10-16",
- "n_variants_tested": 106,
- "n_entry_variants": 66,
- "n_timing_variants": 40,
+ "n_variants_tested": 114,
+ "n_entry_variants": 69,
+ "n_timing_variants": 45,
  "n_passed": 0,
- "best_entry_q": 0.248,
+ "best_entry_q": 0.26,
  "vix40": {
   "variant": "vix_level[rule=vix>=40]",
   "n_events": 17.0,
@@ -18,7 +18,7 @@
   "hit_63": 0.8824,
   "hit_base_63": 0.7031,
   "p": 0.0206,
-  "q": 0.2841,
+  "q": 0.297,
   "excess_is": 0.0903,
   "excess_oos": 0.1329,
   "spx_excess_63": 0.0564,
@@ -175,7 +175,7 @@
   "hit_63": 0.7593,
   "hit_base_63": 0.7031,
   "p": 0.0757,
-  "q": 0.4544,
+  "q": 0.4355,
   "excess_is": 0.0356,
   "excess_oos": 0.0451,
   "spx_excess_63": 0.0291,
@@ -194,7 +194,7 @@
   "hit_63": 0.8125,
   "hit_base_63": 0.7463,
   "p": 0.0163,
-  "q": 0.2841,
+  "q": 0.297,
   "excess_is": 0.0589,
   "excess_oos": 0.0193,
   "spx_excess_63": 0.022,
@@ -466,7 +466,7 @@
   "oos_alpha": -0.0153
  },
  "exit_rules": {
-  "n_tested": 40,
+  "n_tested": 45,
   "n_passed": 0,
   "best": {
    "variant": "fomc_even_weeks",
@@ -496,28 +496,28 @@
    "name": "股票 Put/Call 偏高",
    "why": "最常見的反向指標；之後 3 個月和平常差不多或更差",
    "excess_63": -0.0068,
-   "q": 0.78
+   "q": 0.77
   },
   {
    "variant": "aaii_low[rule=spread_pct5]",
    "name": "AAII 散戶極度悲觀",
    "why": "方向是正的，但不顯著，S&P 500 上更弱",
    "excess_63": 0.0268,
-   "q": 0.49
+   "q": 0.47
   },
   {
    "variant": "naaim_low[rule=<=30]",
    "name": "NAAIM 經理人曝險 ≤ 30",
    "why": "幾乎沒有效果",
    "excess_63": 0.0083,
-   "q": 0.65
+   "q": 0.63
   },
   {
    "variant": "vix_term_inv[th=1.0]",
    "name": "VIX 期限結構倒掛",
    "why": "倒掛當下買，之後和平常一樣；倒掛時出場反而更差",
    "excess_63": -0.0011,
-   "q": 0.71
+   "q": 0.7
   },
   {
    "variant": "composite_fear[th=75]",
@@ -531,14 +531,14 @@
    "name": "COT 槓桿基金極空",
    "why": "不顯著，walk-forward 不成立",
    "excess_63": 0.0192,
-   "q": 0.5
+   "q": 0.48
   },
   {
    "variant": "insider_buy[pct=95]",
    "name": "SEC 內部人買進比例高檔",
    "why": "2006–2026 大盤層級不顯著",
    "excess_63": 0.0288,
-   "q": 0.5
+   "q": 0.48
   },
   {
    "variant": "fed_put",
@@ -552,14 +552,21 @@
    "name": "距高點跌 10%（舊手冊的分批）",
    "why": "只對 NDX 有效，換到 S&P 500 任何年代都沒效果",
    "excess_63": 0.0464,
-   "q": 0.25
+   "q": 0.26
   },
   {
    "variant": "breadth_thrust[low=0.2,high=0.5]",
    "name": "產業廣度急速回升",
    "why": "1926–1959 反向，即時版本弱",
    "excess_63": 0.027,
-   "q": 0.28
+   "q": 0.3
+  },
+  {
+   "variant": "epu_spike[pct=95]",
+   "name": "政策不確定性（EPU）飆高（2026-10 追加）",
+   "why": "方向是正的，但多重檢定後不顯著，而且大多和 VIX ≥ 40 是同一批危機",
+   "excess_63": 0.066,
+   "q": 0.37
   }
  ]
 }

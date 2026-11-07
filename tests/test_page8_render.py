@@ -33,12 +33,13 @@ def check(name, cond):
         FAILS.append(name)
 
 
-def install(raw: dict, warnings: list[str] | None = None, now=NOW):
+def install(raw: dict, warnings: list[str] | None = None, now=NOW, quote=None):
     def fake_gather(symbol="QQQ"):
         CALLS["gather"] += 1
         return raw, list(warnings or [])
     L.gather_live = fake_gather
     L._now = lambda: now
+    L.fetch_vix_quote = lambda timeout=10: quote     # 盤中報價：預設抓不到（不連網）
 
 
 def run(page: Path = PAGE, clear: bool = True) -> AppTest:
@@ -117,8 +118,9 @@ if __name__ == "__main__":
     check("最上方說明：分成 4 個等級、要不要買由你決定、不是投資建議",
           any("分成 4 個等級" in i.value and "最後由你決定" in i.value and "不是投資建議" in i.value for i in at.info))
     check("等級卡寫出這個等級歷史上之後 3 個月的表現", f"歷史上（1990 起）第 {exp} 級之後 3 個月" in level_card(at))
-    check("右上有出場參考卡：寫明 40 個出場規則通過 0 個、不是賣出建議",
-          "研究測了 40 個出場規則，通過 0 個" in exit_card(at) and "不是賣出建議" in exit_card(at)
+    n_exit = (L.load_evidence().get("exit_rules") or {}).get("n_tested")
+    check("右上有出場參考卡：寫明測過的出場規則通過 0 個、不是賣出建議",
+          f"研究測了 {n_exit} 個出場規則，通過 0 個" in exit_card(at) and "不是賣出建議" in exit_card(at)
           and "10 個月均線" in exit_card(at))
     check("恐慌觀察燈的細節移到兩張卡下面", "⚪ 正常" in card(at)
           and first(at, lambda x: "出場參考" in x[1]) < first(at, lambda x: "恐慌觀察燈" in x[1]))
@@ -328,6 +330,25 @@ if __name__ == "__main__":
     set_inputs(at, {"目前股票市值": 700_000, "目前可投資現金（含現金桶）": 300_000, "平常的股票比例（%）": 50,
                     "加碼期間多加（百分點）": 20})
     check("提醒把股票比例調回平常的 50%", any("調回平常的 50%" in i.value for i in at.info))
+
+    print("盤中參考")
+    install(raw_data("2026-10-20"))
+    at = run(tmp_page(local=False))
+    check("抓不到盤中報價 → 頁面照常，說明最新的收盤", len(at.exception) == 0
+          and any("盤中報價抓不到" in c.value for c in at.caption))
+    raw = raw_data("2026-10-20", vix_tail=[30.0, 38.0])
+    install(raw, quote={"price": 41.0, "time": ny(2026, 10, 21, 11, 0), "source": "CBOE"})
+    at = run(tmp_page(local=False))
+    box = " ".join(m.value for m in at.markdown if "VIX 盤中參考" in m.value)
+    check("盤中 41、昨收 38 → 顯示兩個數字和漲幅", "41.0" in box and "2026-10-20 收盤 38.0" in box and "+3.00" in box)
+    check("盤中站上 40 → 黃色提醒：收盤還在 40 以上就是全面恐慌",
+          any("站上 40" in w.value and "第 4 級" in w.value for w in at.warning))
+    check("燈號仍然照收盤（38 → 留意），不因為盤中 41 改變", "🟡 留意" in card(at))
+    install(raw_data("2026-10-20"), now=ny(2026, 10, 21, 11, 0),
+            quote={"price": 22.0, "time": ny(2026, 10, 21, 10, 45), "source": "CBOE"})
+    at = run(tmp_page(local=False))
+    check("交易時間中（每 60 秒自動更新的版本）頁面也正常，顯示盤中", len(at.exception) == 0
+          and any("VIX 盤中參考**（盤中" in m.value and "22.0" in m.value for m in at.markdown))
 
     print("\n全部通過" if not FAILS else f"\n失敗：{FAILS}")
     sys.exit(1 if FAILS else 0)

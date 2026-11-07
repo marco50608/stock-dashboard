@@ -95,6 +95,16 @@ class Bundle:
     def fred_weekly(self, sid, lag_days):
         return self._memo(("fredw", sid, lag_days), lambda: D.fred_weekly_avail(sid, lag_days).dropna())
 
+    # 第三輪（PREREG_batch3_2026-10-25.md）
+    def sloos(self):
+        return self._memo("sloos", lambda: D.sloos_avail().dropna(how="all"))
+
+    def ebp(self, extra_months=0):
+        return self._memo(("ebp", extra_months), lambda: D.ebp_avail(extra_months).dropna(how="all"))
+
+    def epu30(self, extra_bdays=0):
+        return self._memo(("epu30", extra_bdays), lambda: D.epu30_avail(extra_bdays).dropna())
+
     def unrate_first(self):
         def f():
             a = D.alfred_first("UNRATE")

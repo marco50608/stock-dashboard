@@ -29,6 +29,7 @@ def main(argv: list[str]) -> int:
         ("回測引擎測試", ["tests/run_tests.py"]),
         ("訊號截斷（前視）測試", ["tests/run_signal_checks.py"]),
         ("主研究", ["run_study.py"]),
+        ("第三輪敏感度檢查（不算判定）", ["run_batch3_sensitivity.py"]),
         ("穩健性檢查", ["run_robustness.py"]),
         ("第二輪穩健性與加碼用法", ["run_robustness2.py"]),
     ]

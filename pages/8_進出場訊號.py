@@ -136,6 +136,37 @@ with c2:
         f"<ul style='font-size:13.5px;padding-left:18px;margin:8px 0'>{ex_items}</ul>"
         f"<span style='font-size:12px;opacity:.75'>{ex['footer']}</span></div>",
         unsafe_allow_html=True)
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _vix_quote():
+    return L.fetch_vix_quote()
+
+
+def _intraday_box():
+    """VIX 盤中參考：和前一個收盤比、如果今天收在這裡是第幾級。交易時間每 60 秒自己更新。"""
+    iv = L.intraday_view(res, _vix_quote())
+    with st.container(border=True):
+        if not iv["available"]:
+            st.caption(f"**VIX 盤中參考**：{iv['message']}")
+            return
+        chg = (f"{iv['change']:+.2f}（{iv['change_pct']:+.1%}）" if iv.get("change") is not None else "—")
+        src = f"，{iv['source']} 報價約延遲 15 分鐘" if iv.get("projection") else ""
+        base_txt = f"{iv['base']:.2f}" if iv.get("base") else "—"
+        st.markdown(f"**VIX 盤中參考**（{iv['phase']}，{iv['time_txt']}{src}）：**{iv['price']:.2f}**，"
+                    f"比 {iv['base_date']} 收盤 {base_txt} {chg}")
+        if iv.get("would_trigger"):
+            st.warning(iv["message"])
+        else:
+            st.caption(iv["message"])
+        st.caption("燈號和等級只看收盤；盤中的數字只是提前提醒，收盤可能又回去。")
+
+
+if hasattr(st, "fragment"):
+    st.fragment(run_every=60 if L.vix_market_open() else None)(_intraday_box)()
+else:
+    _intraday_box()
+
 conf = "；賣壓已全面化：" + "、".join(res["confirmations"]) if res.get("confirmations") else ""
 with st.container(border=True):
     st.markdown(f"**恐慌觀察燈**（細節；觀察名單，未通過多重檢定）：{emoji} {state or '—'}　"

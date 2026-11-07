@@ -80,8 +80,9 @@ def shift_bdays(dates, n: int, cal: pd.DatetimeIndex | None = None) -> pd.Dateti
     cal = calendar() if cal is None else cal
     d = pd.DatetimeIndex(pd.to_datetime(dates))
     pos = cal.searchsorted(d, side="left") + n
-    pos = np.clip(pos, 0, len(cal) - 1)
-    return cal[pos]
+    # 超過交易日曆最後一天的，回傳 NaT（還拿不到），不要擠到最後一天（那樣最後一天會用到之後才公布的資料）
+    inside = pos < len(cal)
+    return cal[np.clip(pos, 0, len(cal) - 1)].where(inside)
 
 
 # ---------------------------------------------------------------------------
@@ -242,6 +243,60 @@ def claims_avail() -> pd.Series:
     v = np.concatenate(parts_v[::-1])
     a = np.concatenate(parts_a[::-1])
     return avail_to_daily(v, a, ffill_limit=WEEKLY_STALE)
+
+
+# ---------------------------------------------------------------------------
+# 第三輪（PREREG_batch3_2026-10-25.md）：SLOOS、EBP、EPU
+# ---------------------------------------------------------------------------
+SLOOS_LAG_DAYS = 50   # 沒有 ALFRED 公布日的早期 SLOOS：觀測日 + 50 天（ALFRED 實際 29～46 天）
+EBP_LAG_MONTHS = 2    # EBP：觀測月第一天 + 2 個月（實際約 1 個多月）
+QUARTERLY_STALE = 100  # 季資料最多沿用 100 個交易日
+
+
+def sloos_releases() -> pd.DataFrame:
+    """SLOOS（DRTSCILM，銀行收緊工商放款標準的淨比例，季）每一次公布：value、prev（前一次公布值）、avail（公布日）。
+    2010-08 起用 ALFRED 第一次公布的數字和公布日；更早的用目前版本、公布日 = 觀測日 + 50 天。"""
+    first = alfred_first("DRTSCILM")
+    cur = fred_raw("DRTSCILM")
+    early = cur[cur.index < first["obs_date"].min()]
+    df = pd.DataFrame({
+        "obs": list(early.index) + list(first["obs_date"]),
+        "value": list(early.values) + list(first["value"].values),
+        "avail": list(early.index + pd.Timedelta(days=SLOOS_LAG_DAYS)) + list(first["release_date"]),
+    }).sort_values("obs").reset_index(drop=True)
+    df["prev"] = df["value"].shift(1)
+    return df
+
+
+def sloos_avail() -> pd.DataFrame:
+    """每天「已經公布的最新一次」SLOOS 和前一次公布值。"""
+    r = sloos_releases()
+    return pd.DataFrame({c: avail_to_daily(r[c].values, r["avail"].values, ffill_limit=QUARTERLY_STALE)
+                         for c in ("value", "prev")})
+
+
+def ebp_monthly() -> pd.DataFrame:
+    """Gilchrist-Zakrajšek 超額債券溢酬（月）。每次更新會重新估計整段歷史，沒有歷史版本（見事先登記的限制）。"""
+    df = pd.read_csv(RAW / "fed" / "ebp.csv", parse_dates=["date"]).sort_values("date").reset_index(drop=True)
+    df["chg3"] = df["ebp"] - df["ebp"].shift(3)
+    df["max6"] = df["ebp"].rolling(6, min_periods=6).max()
+    df["avail"] = df["date"] + pd.DateOffset(months=EBP_LAG_MONTHS)
+    return df
+
+
+def ebp_avail(extra_months: int = 0) -> pd.DataFrame:
+    """每天已經公布的最新 EBP、3 個月變化、6 個月最高點。extra_months：敏感度檢查用（多延後幾個月）。"""
+    m = ebp_monthly()
+    a = (m["avail"] + pd.DateOffset(months=extra_months)).values
+    return pd.DataFrame({c: avail_to_daily(m[c].values, a, ffill_limit=MONTHLY_STALE) for c in ("ebp", "chg3", "max6")})
+
+
+def epu30_avail(extra_bdays: int = 0) -> pd.Series:
+    """EPU 每日指數（USEPUINDXD，含週末）的 30 個日曆天平均，觀測日 + 1 個交易日才算拿得到。
+    extra_bdays：敏感度檢查用（多延後幾個交易日）。"""
+    s = fred_raw("USEPUINDXD")
+    m = s.rolling("30D", min_periods=20).mean().dropna()
+    return avail_to_daily(m.values, shift_bdays(m.index, 1 + extra_bdays), ffill_limit=WEEKLY_STALE)
 
 
 # ---------------------------------------------------------------------------
